@@ -1,0 +1,54 @@
+{
+  "_metadata": {
+    "major_version": 2,
+    "minor_version": 1
+  },
+  "display_information": {
+    "name": "OMP Slack",
+    "description": "Connect OMP to Slack with your own user account."
+  },
+  "oauth_config": {
+    "redirect_urls": [
+      "http://localhost:3118/callback"
+    ],
+    "pkce_enabled": true,
+    "scopes": {
+      "user": [
+        "search:read.public",
+        "search:read.private",
+        "search:read.mpim",
+        "search:read.im",
+        "search:read.files",
+        "files:read",
+        "files:write",
+        "emoji:read",
+        "search:read.users",
+        "users:read",
+        "users:read.email",
+        "chat:write",
+        "channels:history",
+        "groups:history",
+        "mpim:history",
+        "im:history",
+        "channels:write",
+        "groups:write",
+        "im:write",
+        "mpim:write",
+        "reactions:write",
+        "reactions:read",
+        "canvases:read",
+        "canvases:write",
+        "channels:read",
+        "groups:read",
+        "mpim:read",
+        "im:read",
+        "lists:read",
+        "lists:write"
+      ]
+    }
+  },
+  "settings": {
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": true
+  }
+}

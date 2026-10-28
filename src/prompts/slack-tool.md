@@ -1,0 +1,1 @@
+Use `call`, `tools`, `schema`, `workspaces`, or `connect` to work with Slack; use `slack://<workspace>/...` with `read`, `glob`, or `grep` for read-only context. `read xd://slack` shows this schema; `{"op":"tools"}` lists Slack MCP tools; `{"op":"schema","tool":"..."}` shows one tool's `inputSchema`.
