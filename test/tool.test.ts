@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { MCPToolCallResult, MCPToolDefinition } from "@oh-my-pi/pi-coding-agent/mcp";
-import { executeSlackOperation } from "../src/tool";
+import { executeSlackOperation, slackApproval } from "../src/tool";
 import type { SlackCore } from "../src/types";
 
 const TOOLS: MCPToolDefinition[] = [
@@ -23,7 +23,6 @@ function fakeCore(result: MCPToolCallResult): SlackCore & { calls: Array<{ tool:
 		account: unused,
 		login: unused,
 		logout: unused,
-		resolveWorkspace: unused,
 		closeAll: unused,
 		listWorkspaces: async () => [{ teamId: "T1", teamName: "Simply" }],
 		listTools: async () => TOOLS,
@@ -65,4 +64,17 @@ test("unknown tools are refused before any call, listing what exists", async () 
 
 test("login without a UI presenter points at /slack login", async () => {
 	await expect(executeSlackOperation(fakeCore({ content: [] }), { op: "login" })).rejects.toThrow("/slack login");
+});
+
+test("only discovery and Slack read tools skip write approval", () => {
+	for (const tool of ["slack_read_channel", "slack.slack_search_public_and_private", "slack_list_user_channels", "slack_get_reactions"]) {
+		expect(slackApproval({ tool })).toBe("read");
+	}
+	for (const op of ["tools", "schema", "workspaces"]) expect(slackApproval({ op })).toBe("read");
+	for (const tool of ["slack_send_message", "slack_get_file_upload_url", "slack_update_canvas", "slack_add_reaction"]) {
+		expect(slackApproval({ tool })).toBe("write");
+	}
+	expect(slackApproval({ op: "login" })).toBe("write");
+	expect(slackApproval({ op: "schema", tool: "slack_send_message" })).toBe("read");
+	expect(slackApproval({})).toBe("write");
 });

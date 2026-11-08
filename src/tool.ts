@@ -75,6 +75,16 @@ export async function executeSlackOperation(
 	}
 }
 
+/** Connector tools that only read Slack; everything else (send, schedule, react, canvas, membership, upload) is a write. */
+const READ_ONLY_SLACK_TOOL = /^(?:slack\.)?slack_(?:read_|search_|list_|get_reactions$)/u;
+
+/** Discovery and read calls run at the read tier; Slack mutations and sign-in stay at write. */
+export function slackApproval(args: unknown): "read" | "write" {
+	const { op = "call", tool } = (args ?? {}) as SlackToolInput;
+	if (op === "tools" || op === "schema" || op === "workspaces") return "read";
+	return op === "call" && typeof tool === "string" && READ_ONLY_SLACK_TOOL.test(tool.trim()) ? "read" : "write";
+}
+
 /** One discoverable `xd://slack` device; no Slack tool schemas enter context until the model asks for them. */
 export function registerSlackTool(pi: ExtensionAPI, core: SlackCore = slackCore): void {
 	const z = pi.zod;
@@ -83,7 +93,7 @@ export function registerSlackTool(pi: ExtensionAPI, core: SlackCore = slackCore)
 		label: "Slack",
 		description: slackToolDescription.trim(),
 		loadMode: "discoverable",
-		approval: "write",
+		approval: slackApproval,
 		parameters: z
 			.object({
 				op: z.enum(["call", "tools", "schema", "workspaces", "login"]).default("call"),

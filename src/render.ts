@@ -95,92 +95,9 @@ export function mcpRecords(result: MCPToolCallResult, keys: readonly string[]): 
 	return records?.filter(isJsonRecord);
 }
 
-function firstText(record: JsonRecord, keys: readonly string[]): string | undefined {
-	for (const key of keys) {
-		const value = record[key];
-		if (typeof value === "string" || typeof value === "number") return String(value);
-		if (isJsonRecord(value)) {
-			for (const nestedKey of ["display_name", "real_name", "name", "username", "id", "text"]) {
-				const nested = value[nestedKey];
-				if (typeof nested === "string" || typeof nested === "number") return String(nested);
-			}
-		}
-	}
-	return undefined;
-}
-
-function messageText(value: unknown): string {
-	if (typeof value === "string") return value;
-	if (typeof value === "number") return String(value);
-	if (Array.isArray(value)) return value.map(messageText).filter(Boolean).join("\n");
-	if (isJsonRecord(value)) {
-		if (typeof value.text === "string") return value.text;
-		for (const key of ["elements", "blocks", "content"]) {
-			if (value[key] !== undefined) return messageText(value[key]);
-		}
-	}
-	return "";
-}
-
-function replyCount(message: JsonRecord): number {
-	for (const key of ["reply_count", "replyCount", "num_replies"]) {
-		const value = message[key];
-		if (typeof value === "number" && Number.isFinite(value)) return value;
-		if (typeof value === "string") {
-			const parsed = Number(value);
-			if (Number.isFinite(parsed)) return parsed;
-		}
-	}
-	return Array.isArray(message.replies) ? message.replies.length : 0;
-}
-
-function slackUrl(workspace: string, segments: readonly string[]): string {
-	return `slack://${encodeURIComponent(workspace)}/${segments.map(encodeURIComponent).join("/")}`;
-}
-
-export interface SlackConversationRenderOptions {
-	workspace: string;
-	channel: string;
-	threadTs?: string;
-}
-
-/** Render Slack history/thread payloads into linkable Markdown. */
-export function renderSlackConversation(
-	result: MCPToolCallResult,
-	options: SlackConversationRenderOptions,
-): string {
-	const threadUrl = options.threadTs
-		? slackUrl(options.workspace, ["threads", options.channel, options.threadTs])
-		: undefined;
-	const messages = mcpRecords(result, ["messages", "thread", "replies", "results", "data"]);
-	const heading = options.threadTs ? "# Slack thread" : "# Slack channel history";
-	const metadata = [
-		`Workspace: \`${options.workspace}\``,
-		`Channel: \`${options.channel}\``,
-		...(threadUrl ? [`Thread: \`${threadUrl}\``] : []),
-	].join(" · ");
-
-	if (!messages || messages.length === 0) {
-		return truncateMarkdown(`${heading}\n\n${metadata}\n\n${renderMcpResult(result)}`);
-	}
-
-	const renderedMessages = messages.map(message => {
-		const timestamp = firstText(message, ["ts", "timestamp", "time"]) ?? "unknown timestamp";
-		const author = firstText(message, ["author", "user_name", "username", "userName", "user", "user_id", "userId"])
-			?? "unknown author";
-		const text = messageText(message.text ?? message.message ?? message.content) || "(no text)";
-		const replies = replyCount(message);
-		const threadHint = replies > 0 && timestamp !== "unknown timestamp"
-			? `\n  Thread: \`${slackUrl(options.workspace, ["threads", options.channel, timestamp])}\``
-			: "";
-		return `- \`${timestamp}\` — **${author}** (replies: ${replies}): ${text}${threadHint}`;
-	});
-	return truncateMarkdown(`${heading}\n\n${metadata}\n\n${renderedMessages.join("\n\n")}`);
-}
-
 export function renderSlackWorkspaces(workspaces: readonly SlackWorkspace[]): string {
 	if (workspaces.length === 0) return "The ChatGPT Slack app reports no Slack workspaces.";
-	const rows = workspaces.map(workspace => `- ${workspace.teamName} (${workspace.teamId}) — \`slack://${encodeURIComponent(workspace.teamId)}/\``);
+	const rows = workspaces.map(workspace => `- ${workspace.teamName} (\`team_id\`: ${workspace.teamId})`);
 	return `Slack workspaces:\n${rows.join("\n")}`;
 }
 

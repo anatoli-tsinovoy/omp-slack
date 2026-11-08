@@ -5,13 +5,6 @@ export class SlackNotConnectedError extends Error {
  }
 }
 
-export class SlackAmbiguousWorkspaceError extends Error {
- constructor(message: string) {
-  super(message);
-  this.name = "SlackAmbiguousWorkspaceError";
- }
-}
-
 export class SlackAuthError extends Error {
  constructor(message: string, options?: ErrorOptions) {
   super(message, options);

@@ -27,7 +27,6 @@ function headlessCore(): SlackCore & { pasted: string[] } {
 		listTools: unused,
 		callTool: unused,
 		listWorkspaces: unused,
-		resolveWorkspace: unused,
 		closeAll: unused,
 	};
 }

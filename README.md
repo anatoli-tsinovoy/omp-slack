@@ -1,6 +1,6 @@
 # omp-slack
 
-An OMP plugin that reaches Slack through the **ChatGPT Slack app**. It signs in to ChatGPT with its own OAuth login and talks to the ChatGPT apps MCP gateway (`https://chatgpt.com/backend-api/ps/mcp`). Slack operations go through one discoverable `xd://slack` device, and read-only `slack://` URLs work with `read`, `glob`, and `grep`. You don't create a Slack app or OAuth client.
+An OMP plugin that reaches Slack through the **ChatGPT Slack app**. It signs in to ChatGPT with its own OAuth login and talks to the ChatGPT apps MCP gateway (`https://chatgpt.com/backend-api/ps/mcp`). Every Slack operation, read or write, goes through one discoverable `xd://slack` device. You don't create a Slack app or OAuth client.
 
 ## Install
 
@@ -37,38 +37,23 @@ On a headless or remote host (SSH, containers), open the full authorization URL 
 
 ## Use
 
-Read Slack data with `read` (and `grep` or `glob` on Slack URLs). `slack://` lists the connected workspaces; other URLs start with a workspace selector, either the team ID or the name:
-
-```text
-slack://
-slack://acme/channels/
-slack://acme/channels/engineering
-slack://acme/threads/C123456/1712345678.123456
-slack://acme/users/me
-slack://acme/canvases/<canvas-id>
-slack://acme/files/<file-id>
-slack://acme/search?q=launch%20plan&scope=all
-slack://acme/search?q=budget&type=files
-```
-
-In search, `q` is split into keywords, with quoted phrases kept whole, and is also sent as the natural-language query.
-
-All other Slack operations go through the `xd://slack` device (`write` JSON to it; `read xd://slack` shows its usage):
+All Slack operations go through the `xd://slack` device (`write` JSON to it; `read xd://slack` shows its usage):
 
 ```json
-{"op":"tools"}
-{"op":"schema","tool":"slack_search_public"}
-{"tool":"slack_search_public","args":{"keywords":["launch"],"natural_language_query":"launch plan"}}
 {"op":"workspaces"}
+{"op":"tools"}
+{"op":"schema","tool":"slack_read_channel"}
+{"tool":"slack_search_public","args":{"keywords":["launch"],"natural_language_query":"launch plan"}}
+{"tool":"slack_read_thread","args":{"channel_id":"C123456","message_ts":"1712345678.123456"}}
 {"op":"login"}
 ```
 
 - `op` defaults to `call`. Tool names drop the gateway's `slack.` prefix (the prefixed form also works).
-- With several Slack workspaces, pass `team_id` in `args` where the tool's schema accepts it.
+- With several Slack workspaces, pass the `team_id` from `workspaces` in `args` where the tool's schema accepts it.
 - No gateway connection opens until Slack is first used, and no Slack tool schemas enter the model's context at load: `tools` lists names, and each schema arrives only through its own `schema` op.
-- Calls require approval like other write-capable tools. Tools from other ChatGPT connectors are never listed or callable.
+- Approval tiers: `tools`, `schema`, `workspaces`, and calls to the Slack app's read tools (`slack_read_*`, `slack_search_*`, `slack_list_*`, `slack_get_reactions`) run at the `read` tier. Sending, scheduling, reactions, canvas edits, membership changes, uploads, and `login` run at `write`. Tools from other ChatGPT connectors are never listed or callable.
 
-`slack://` is read-only. Confirm with the user before sending or scheduling messages, adding reactions, or creating/editing canvases unless they explicitly requested that exact action.
+Confirm with the user before sending or scheduling messages, adding reactions, or creating/editing canvases unless they explicitly requested that exact action.
 
 ## Included prompts
 

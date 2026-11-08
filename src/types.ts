@@ -1,6 +1,6 @@
 /**
  * Shared contract between the core (credentials + ChatGPT apps gateway client) and the surfaces
- * (Slack tools, /slack command, slack:// URLs).
+ * (`xd://slack` device and the /slack command).
  */
 import type { OAuthController } from "@oh-my-pi/pi-ai/oauth/types";
 import type { MCPToolCallResult, MCPToolDefinition } from "@oh-my-pi/pi-coding-agent/mcp";
@@ -50,11 +50,6 @@ export interface SlackCore {
  callTool(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<MCPToolCallResult>;
  /** Workspaces from `slack_list_workspaces`, memoized per login. */
  listWorkspaces(signal?: AbortSignal): Promise<SlackWorkspace[]>;
- /**
-  * Resolve a team id or name (case-insensitive). `undefined` → the only workspace.
-  * Throws SlackNotConnectedError / SlackAmbiguousWorkspaceError with next-step guidance.
-  */
- resolveWorkspace(selector?: string, signal?: AbortSignal): Promise<SlackWorkspace>;
  /** Close the live gateway connection (session_shutdown). */
  closeAll(): Promise<void>;
 }

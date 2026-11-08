@@ -6,8 +6,8 @@ Given the comma-separated channel names in `$ARGUMENTS`:
 
 1. Split the names, trim whitespace, and remove a leading `#` from each.
 2. Use the requested workspace. If several workspaces are connected and none was named, ask the user to choose. If Slack reports that the plugin is not signed in, ask the user to run `/slack login`.
-3. For each channel, read `slack://<ws>/channels/<name-or-id>`. If a name cannot be resolved, inspect `slack://<ws>/channels/` or call `slack_search_channels` through `write xd://slack` after checking its schema.
-4. Read relevant active threads at `slack://<ws>/threads/<channel>/<ts>`. Summarize notable topics, decisions, questions, and action items.
+3. For each channel, find its id with `slack_search_channels` (or `slack_list_user_channels`) and read recent history with `slack_read_channel`, all through `write xd://slack` after checking each tool's schema.
+4. Read relevant active threads with `slack_read_thread`. Summarize notable topics, decisions, questions, and action items.
 5. Present:
 
    ```text
