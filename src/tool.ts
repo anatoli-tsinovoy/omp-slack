@@ -3,6 +3,7 @@ import type { MCPToolDefinition } from "@oh-my-pi/pi-coding-agent/mcp";
 import slackToolDescription from "./prompts/slack-tool.md" with { type: "text" };
 import { findSlackTool, slackCore } from "./core";
 import { runSlackLogin } from "./login";
+import { createSlackReads, isSlackReadOp, SLACK_READ_OPS, type SlackReadInput, type SlackReadOp, type SlackReads } from "./reads";
 import {
 	renderMcpResult,
 	renderSlackToolList,
@@ -12,12 +13,20 @@ import {
 } from "./render";
 import type { ChatGPTAccount, SlackCore } from "./types";
 
-export type SlackToolOperation = "call" | "tools" | "schema" | "workspaces" | "login";
+const DEVICE_OPS = ["call", "tools", "schema", "workspaces", "login"] as const;
+export type SlackToolOperation = (typeof DEVICE_OPS)[number] | SlackReadOp;
 
-export interface SlackToolInput {
+export interface SlackToolInput extends SlackReadInput {
 	op?: SlackToolOperation;
 	tool?: string;
 	args?: Record<string, unknown>;
+}
+
+export interface SlackOperationOptions {
+	/** Curated reads; pass one instance per device so channel-name lookups are remembered across calls. */
+	reads?: SlackReads;
+	login?: () => Promise<ChatGPTAccount>;
+	signal?: AbortSignal;
 }
 
 export interface SlackToolResult {
@@ -47,10 +56,11 @@ async function requireTool(core: SlackCore, name: string | undefined, operation:
 export async function executeSlackOperation(
 	core: SlackCore,
 	input: SlackToolInput,
-	login?: () => Promise<ChatGPTAccount>,
-	signal?: AbortSignal,
+	{ reads = createSlackReads(core), login, signal }: SlackOperationOptions = {},
 ): Promise<SlackToolResult> {
-	switch (input.op ?? "call") {
+	const op = input.op ?? "call";
+	if (isSlackReadOp(op)) return textResult(await reads.run(op, input, signal));
+	switch (op) {
 		case "workspaces":
 			return textResult(renderSlackWorkspaces(await core.listWorkspaces(signal)));
 		case "login": {
@@ -81,13 +91,14 @@ const READ_ONLY_SLACK_TOOL = /^(?:slack\.)?slack_(?:read_|search_|list_|get_reac
 /** Discovery and read calls run at the read tier; Slack mutations and sign-in stay at write. */
 export function slackApproval(args: unknown): "read" | "write" {
 	const { op = "call", tool } = (args ?? {}) as SlackToolInput;
-	if (op === "tools" || op === "schema" || op === "workspaces") return "read";
+	if (op === "tools" || op === "schema" || op === "workspaces" || isSlackReadOp(op)) return "read";
 	return op === "call" && typeof tool === "string" && READ_ONLY_SLACK_TOOL.test(tool.trim()) ? "read" : "write";
 }
 
 /** One discoverable `xd://slack` device; no Slack tool schemas enter context until the model asks for them. */
 export function registerSlackTool(pi: ExtensionAPI, core: SlackCore = slackCore): void {
 	const z = pi.zod;
+	const reads = createSlackReads(core);
 	pi.registerTool({
 		name: "slack",
 		label: "Slack",
@@ -96,13 +107,24 @@ export function registerSlackTool(pi: ExtensionAPI, core: SlackCore = slackCore)
 		approval: slackApproval,
 		parameters: z
 			.object({
-				op: z.enum(["call", "tools", "schema", "workspaces", "login"]).default("call"),
-				tool: z.string().optional().describe("Slack tool name, e.g. slack_search_public; required for call and schema."),
+				op: z.enum([...DEVICE_OPS, ...SLACK_READ_OPS]).default("call"),
+				tool: z.string().optional().describe("Slack tool name, e.g. slack_send_message; required for call and schema."),
 				args: z.record(z.string(), z.unknown()).optional().describe("Arguments for the named tool, per its schema."),
+				workspace: z.string().optional().describe("Read ops: team id or name; optional with one workspace."),
+				channel: z.string().optional().describe("history/thread: channel id, name, or #name."),
+				ts: z.string().optional().describe("thread: parent message timestamp."),
+				user: z.string().optional().describe("profile: user id; omit or `me` for yourself."),
+				id: z.string().optional().describe("canvas/file: canvas or file id."),
+				query: z.string().optional().describe("search: Slack query with modifiers (from:, in:, after:, \"phrase\")."),
+				scope: z.enum(["public", "all"]).optional().describe("search: `all` adds private channels and DMs."),
+				type: z.enum(["files"]).optional().describe("search: `files` searches files."),
+				limit: z.number().int().positive().optional().describe("history: maximum messages."),
+				oldest: z.string().optional().describe("history: oldest message ts."),
+				latest: z.string().optional().describe("history: latest message ts."),
 			})
 			.strict(),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			return executeSlackOperation(core, params, () => runSlackLogin(ctx, core, signal), signal);
+			return executeSlackOperation(core, params, { reads, login: () => runSlackLogin(ctx, core, signal), signal });
 		},
 	});
 }

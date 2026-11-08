@@ -1,5 +1,6 @@
 import { SlackGatewayClient, type SlackGatewayOptions } from "./client";
 import { ChatGPTAuth, type ChatGPTAuthOptions } from "./credentials";
+import { SlackAmbiguousWorkspaceError, SlackNotConnectedError } from "./errors";
 import { mcpRecords, renderMcpResult } from "./render";
 import type { SlackCore, SlackWorkspace } from "./types";
 
@@ -64,6 +65,26 @@ export function createSlackCore(options: SlackCoreOptions = {}): SlackCore {
 				});
 			}
 			return workspaces;
+		},
+		async resolveWorkspace(selector, signal) {
+			const all = await core.listWorkspaces(signal);
+			if (all.length === 0) {
+				throw new SlackNotConnectedError(
+					"The ChatGPT Slack app reports no Slack workspaces. Connect Slack in ChatGPT Settings → Plugins → Slack.",
+				);
+			}
+			const wanted = selector?.trim().toLowerCase();
+			if (!wanted) {
+				if (all.length === 1 && all[0]) return all[0];
+				throw new SlackAmbiguousWorkspaceError(
+					`Several Slack workspaces are connected; pick one of: ${all.map(w => `${w.teamName} (${w.teamId})`).join(", ")}.`,
+				);
+			}
+			const match = all.filter(w => w.teamId.toLowerCase() === wanted || w.teamName.toLowerCase() === wanted);
+			if (match.length === 1 && match[0]) return match[0];
+			throw new (match.length > 1 ? SlackAmbiguousWorkspaceError : SlackNotConnectedError)(
+				`Slack workspace \`${selector}\` ${match.length > 1 ? "is ambiguous" : "is not connected"}. Connected: ${all.map(w => `${w.teamName} (${w.teamId})`).join(", ")}.`,
+			);
 		},
 		closeAll: () => gateway.closeAll(),
 	};

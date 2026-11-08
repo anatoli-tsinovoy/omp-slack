@@ -9,30 +9,34 @@ Use this skill when locating Slack messages, conversations, files, channels, or 
 
 ## Access and workspace selection
 
-- Every Slack operation is a `write` to `xd://slack`: `{"op":"tools"}` lists the Slack app's tools, `{"op":"schema","tool":"slack_search_public"}` shows one tool's arguments, and `{"tool":"slack_search_public","args":{...}}` calls it.
-- Check a tool's schema before its first call; NEVER guess argument names. If Slack rejects arguments, report its error text verbatim and correct them from the schema.
-- `{"op":"workspaces"}` lists connected workspaces with their `team_id`. If several are connected, pass the intended `team_id` where the schema accepts it; if the intended workspace is unclear, ask instead of searching another one.
+- Every Slack operation is a `write` of JSON to `xd://slack`.
+- `{"op":"workspaces"}` lists connected workspaces. With several, pass `"workspace":"<team id or name>"` on every read; if the intended workspace is unclear, ask instead of searching another one.
 - If Slack reports that the plugin is not signed in, ask the user to run `/slack login`.
 
-## Read and search tools
+## Read ops
 
-- `slack_search_public` searches public content; `slack_search_public_and_private` adds private channels and DMs when the user wants broader coverage. Results stay limited to the authenticated user's Slack access.
-- `slack_search_channels` and `slack_search_users` find channels and people by name; `slack_list_user_channels` lists the user's channels.
-- `slack_read_channel` reads channel history (by channel id); `slack_read_thread` reads a full thread (channel id + parent message `ts`).
-- `slack_read_user_profile` reads a profile; with no user id it reads the authenticated user's own profile.
-- `slack_read_canvas` and `slack_read_file` read canvases and files by id.
+- `{"op":"channels"}` lists your channels; add `"channel":"<prefix>"` to filter by name prefix.
+- `{"op":"history","channel":"#name-or-id"}` reads channel history; add `limit`, `oldest`, or `latest` (Slack ts) to page. Channel names resolve automatically.
+- `{"op":"thread","channel":"C123","ts":"1712345678.123456"}` reads a full thread. History and search results print the exact `thread` op after every message with replies; copy it.
+- `{"op":"profile"}` reads your own profile; `{"op":"profile","user":"U123"}` reads someone else's.
+- `{"op":"canvas","id":"F123"}` and `{"op":"file","id":"F123"}` read canvases and files.
+- `{"op":"search","query":"..."}` searches public messages. Add `"scope":"all"` when the user wants private channels and DMs too; results stay limited to the authenticated user's Slack access. Add `"type":"files"` to search files.
 
-Example: `{"tool":"slack_search_public_and_private","args":{"keywords":["\"launch plan\""],"natural_language_query":"launch plan"}}` (confirm field names with `schema` first).
+Example: `{"op":"search","query":"\"launch plan\" in:#product after:2026-01-01","scope":"all"}`
+
+For people or channel discovery beyond these ops, call `slack_search_users` or `slack_search_channels` with `{"tool":"...","args":{...}}` after checking `{"op":"schema","tool":"..."}`. NEVER guess arguments; if Slack rejects them, report its error text verbatim and correct them from the schema.
 
 ## Search strategy
 
 1. Start with a simple phrase or a few keywords.
-2. If results are broad, add a channel, author, or date filter.
-3. If results are sparse, remove filters and try synonyms or more specific terms.
+2. If results are broad, add a channel, author, or date modifier.
+3. If results are sparse, remove modifiers and try synonyms or more specific terms.
 4. Break complex questions into separate searches: topic, people, then channel.
 5. Read source messages and threads before presenting conclusions; do not treat search snippets as full context.
 
 ### Search modifiers
+
+Modifiers in `query` are sent as Slack search filters; the remaining words are keywords.
 
 - **Location:** `in:channel-name`, `in:<#C123456>`, `-in:channel-name`, `in:<@U123456>`, `in:@username`
 - **People:** `from:<@U123456>`, `from:username`, `to:<@U123456>`, `to:me`, `creator:@username`
@@ -44,12 +48,14 @@ Boolean operators (`AND`, `OR`, `NOT`) and parentheses are unsupported. Spaces i
 
 ## File searches
 
-Use the search tool's file content-type argument (see its schema) and Slack file filters in the query, such as `type:pdfs`, `type:documents`, `type:images`, `type:spreadsheets`, or `type:presentations`. Standard filters such as `in:`, `from:`, and dates can narrow file searches.
+Use `"type":"files"` and Slack file filters in `query`, such as `type:pdfs`, `type:documents`, `type:images`, `type:spreadsheets`, or `type:presentations`. Standard modifiers such as `in:`, `from:`, and dates narrow file searches.
+
+Example: `{"op":"search","query":"budget type:pdfs","type":"files"}`
 
 ## Following up
 
-- Read the full thread with `slack_read_thread` for threaded results.
-- Read surrounding history with `slack_read_channel`.
-- Read profiles, files, and canvases with `slack_read_user_profile`, `slack_read_file`, and `slack_read_canvas`.
+- Read the full thread with the `thread` op printed next to a threaded result.
+- Read surrounding history with `history`.
+- Read profiles, files, and canvases with `profile`, `file`, and `canvas`.
 - Slack search may lag behind very recent messages; check channel history for current activity.
 - If a tool name or argument is uncertain, inspect `tools`/`schema`; if a tool is unavailable, state that instead of substituting a guessed call.

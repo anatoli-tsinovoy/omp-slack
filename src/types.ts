@@ -50,6 +50,11 @@ export interface SlackCore {
  callTool(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<MCPToolCallResult>;
  /** Workspaces from `slack_list_workspaces`, memoized per login. */
  listWorkspaces(signal?: AbortSignal): Promise<SlackWorkspace[]>;
+ /**
+  * Resolve a team id or name (case-insensitive). `undefined` → the only workspace.
+  * Throws SlackNotConnectedError / SlackAmbiguousWorkspaceError with next-step guidance.
+  */
+ resolveWorkspace(selector?: string, signal?: AbortSignal): Promise<SlackWorkspace>;
  /** Close the live gateway connection (session_shutdown). */
  closeAll(): Promise<void>;
 }

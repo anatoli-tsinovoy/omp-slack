@@ -49,7 +49,7 @@ export function renderMcpResult(result: MCPToolCallResult): string {
 		result.content.length === 1 &&
 		result.content[0]?.type === "text"
 	) {
-		return truncateMarkdown(result.content[0].text);
+		return truncateMarkdown(unwrapTextPayload(result.content[0].text));
 	}
 
 	const sections = result.content.map(renderContentBlock).filter(section => section.length > 0);
@@ -60,6 +60,18 @@ export function renderMcpResult(result: MCPToolCallResult): string {
 		sections.push(result.isError ? "Slack MCP returned an error without content." : "Slack MCP returned no content.");
 	}
 	return truncateMarkdown(sections.join("\n\n"));
+}
+
+/**
+ * The ChatGPT Slack app answers with pre-rendered text wrapped in JSON (`{"messages":"…","pagination_info":"…"}`).
+ * Show that text itself, not its JSON-escaped form; any other payload is returned unchanged.
+ */
+function unwrapTextPayload(text: string): string {
+	const parsed = parseJsonText(text);
+	if (!parsed.parsed || !isJsonRecord(parsed.value)) return text;
+	const values = Object.values(parsed.value);
+	if (values.length === 0 || !values.every(value => typeof value === "string")) return text;
+	return values.map(value => value.trim()).filter(Boolean).join("\n\n");
 }
 
 /** Use structuredContent first, then decode a JSON text block when available. */
@@ -95,9 +107,34 @@ export function mcpRecords(result: MCPToolCallResult, keys: readonly string[]): 
 	return records?.filter(isJsonRecord);
 }
 
+/** The `xd://slack` call that reads a thread, as the model writes it. */
+function slackThreadOp(workspace: string, channel: string, ts: string): string {
+	return JSON.stringify({ op: "thread", workspace, channel, ts });
+}
+
+/**
+ * After each message with replies in the Slack app's channel history (`Thread: N replies`) or search results
+ * (`Reply count: N`), add the `thread` op that reads it. The channel comes from the nearest `Channel: … (C…)` line.
+ */
+export function linkSlackThreads(text: string, workspace: string): string {
+	let channel: string | undefined;
+	let messageTs: string | undefined;
+	return text
+		.split("\n")
+		.map(line => {
+			const channelId = line.match(/^Channel: .*\((?:ID: )?([CDG][A-Z0-9]+)\)\s*$/u)?.[1];
+			if (channelId) channel = channelId;
+			const ts = line.match(/^Message[ _]TS: (\d+\.\d+)\s*$/iu)?.[1];
+			if (ts) messageTs = ts;
+			if (!channel || !messageTs || !/^(?:Thread: [1-9]\d* repl|Reply count: [1-9])/u.test(line)) return line;
+			return `${line} — read: \`${slackThreadOp(workspace, channel, messageTs)}\``;
+		})
+		.join("\n");
+}
+
 export function renderSlackWorkspaces(workspaces: readonly SlackWorkspace[]): string {
 	if (workspaces.length === 0) return "The ChatGPT Slack app reports no Slack workspaces.";
-	const rows = workspaces.map(workspace => `- ${workspace.teamName} (\`team_id\`: ${workspace.teamId})`);
+	const rows = workspaces.map(workspace => `- ${workspace.teamName} — \`workspace\`: \`${workspace.teamId}\``);
 	return `Slack workspaces:\n${rows.join("\n")}`;
 }
 

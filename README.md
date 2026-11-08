@@ -37,21 +37,40 @@ On a headless or remote host (SSH, containers), open the full authorization URL 
 
 ## Use
 
-All Slack operations go through the `xd://slack` device (`write` JSON to it; `read xd://slack` shows its usage):
+Every Slack operation goes through the `xd://slack` device (`write` JSON to it; `read xd://slack` shows its usage).
+
+Reads have their own ops. `workspace` (team ID or name) is optional when one workspace is connected, and `channel` takes an ID, a name, or `#name`:
 
 ```json
 {"op":"workspaces"}
+{"op":"channels","channel":"eng"}
+{"op":"history","channel":"#engineering","limit":20}
+{"op":"thread","channel":"C123456","ts":"1712345678.123456"}
+{"op":"search","query":"launch plan from:<@U123> after:2026-01-01","scope":"all"}
+{"op":"search","query":"budget type:pdfs","type":"files"}
+{"op":"profile"}
+{"op":"canvas","id":"F0123456"}
+{"op":"file","id":"F0123456"}
+```
+
+- Channel names resolve through your channel list (`name_prefix`), then through channel search for public channels you haven't joined. Resolved IDs are remembered for the session.
+- `history` and `search` results add the exact `thread` op to every message with replies.
+- In `search`, modifiers (`in:`, `from:`, `to:`, `after:`, `before:`, `on:`, `during:`, `is:`, `has:`, `type:`) go to Slack's `filters`; the remaining words are keywords (quoted phrases kept whole) and the semantic query. `scope:"all"` adds private channels and DMs.
+- The Slack app's JSON-wrapped text replies are shown as their text.
+
+Any other Slack app tool is called directly:
+
+```json
 {"op":"tools"}
-{"op":"schema","tool":"slack_read_channel"}
-{"tool":"slack_search_public","args":{"keywords":["launch"],"natural_language_query":"launch plan"}}
-{"tool":"slack_read_thread","args":{"channel_id":"C123456","message_ts":"1712345678.123456"}}
+{"op":"schema","tool":"slack_send_message"}
+{"tool":"slack_send_message","args":{"channel_id":"C123456","message":"Hi"}}
 {"op":"login"}
 ```
 
 - `op` defaults to `call`. Tool names drop the gateway's `slack.` prefix (the prefixed form also works).
 - With several Slack workspaces, pass the `team_id` from `workspaces` in `args` where the tool's schema accepts it.
 - No gateway connection opens until Slack is first used, and no Slack tool schemas enter the model's context at load: `tools` lists names, and each schema arrives only through its own `schema` op.
-- Approval tiers: `tools`, `schema`, `workspaces`, and calls to the Slack app's read tools (`slack_read_*`, `slack_search_*`, `slack_list_*`, `slack_get_reactions`) run at the `read` tier. Sending, scheduling, reactions, canvas edits, membership changes, uploads, and `login` run at `write`. Tools from other ChatGPT connectors are never listed or callable.
+- Approval tiers: the read ops, `tools`, `schema`, `workspaces`, and calls to the Slack app's read tools (`slack_read_*`, `slack_search_*`, `slack_list_*`, `slack_get_reactions`) run at the `read` tier. Sending, scheduling, reactions, canvas edits, membership changes, uploads, and `login` run at `write`. Tools from other ChatGPT connectors are never listed or callable.
 
 Confirm with the user before sending or scheduling messages, adding reactions, or creating/editing canvases unless they explicitly requested that exact action.
 
