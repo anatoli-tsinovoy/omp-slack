@@ -10,4 +10,4 @@ Given the topic in `$ARGUMENTS`:
 4. Present the top 5–10 discussions by relevance. For each, give the channel, starter when visible, date, brief context, and any conclusion, decision, or open question. Group related discussions across channels.
 5. If nothing is found, say so and suggest broader or alternative terms.
 
-Use search results as leads, not as complete evidence; read the source thread before summarizing. Other operations use the `mcp__slack_*` tools, following each tool's schema. Do not post or change Slack content.
+Use search results as leads, not as complete evidence; read the source thread before summarizing. Other operations go through `write xd://slack`, following each tool's schema. Do not post or change Slack content.

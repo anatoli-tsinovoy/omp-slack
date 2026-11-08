@@ -8,8 +8,6 @@ import type { MCPToolCallResult, MCPToolDefinition } from "@oh-my-pi/pi-coding-a
 export const CHATGPT_APPS_MCP_URL = "https://chatgpt.com/backend-api/ps/mcp";
 /** Connector id of the ChatGPT Slack app (Settings → Plugins → Slack). */
 export const SLACK_CONNECTOR_ID = "asdk_app_69a1d78e929881919bba0dbda1f6436d";
-/** Server name used to mint OMP tool names (`mcp__slack_<tool>`), matching a native `slack` MCP server. */
-export const SLACK_SERVER_NAME = "slack";
 
 /** The plugin's own ChatGPT login; never shared with OMP's openai-codex credentials. */
 export interface ChatGPTCredential {

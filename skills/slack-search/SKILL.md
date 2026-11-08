@@ -10,9 +10,9 @@ Use this skill when locating Slack messages, conversations, files, channels, or 
 ## Access and workspace selection
 
 - Use a workspace selector (team ID or name) in every `slack://` URL. If the intended workspace is unclear, ask instead of searching another one.
-- Read Slack data with `read slack://<ws>/...`. The protocol is read-only; every other operation uses the `mcp__slack_*` tools, which are discoverable through tool search.
+- Read Slack data with `read slack://<ws>/...`. The protocol is read-only; every other operation uses `write xd://slack` with `{"tool":"slack_...","args":{...}}`.
 - If Slack reports that the plugin is not signed in, ask the user to run `/slack login`.
-- Follow each tool's schema (for example `mcp__slack_slack_search_public`); NEVER guess unknown arguments. If Slack rejects arguments, report its error text verbatim and correct them from the schema.
+- Discover tools with `{"op":"tools"}` and get a tool's schema with `{"op":"schema","tool":"slack_search_public"}`; NEVER guess unknown arguments. If Slack rejects arguments, report its error text verbatim and correct them from the schema.
 
 ## Read and search URLs
 
@@ -27,7 +27,7 @@ Use this skill when locating Slack messages, conversations, files, channels, or 
 
 Example: `read slack://acme/search?q=launch%20plan&scope=all`
 
-For channel or user discovery not available through a URL, use `mcp__slack_slack_search_channels` or `mcp__slack_slack_search_users`, following their schemas.
+For channel or user discovery not available through a URL, call `slack_search_channels` or `slack_search_users` through `write xd://slack`, after checking their schemas.
 
 ## Search strategy
 

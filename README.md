@@ -1,6 +1,6 @@
 # omp-slack
 
-An OMP plugin that reaches Slack through the **ChatGPT Slack app**. It signs in to ChatGPT with its own OAuth login and talks to the ChatGPT apps MCP gateway (`https://chatgpt.com/backend-api/ps/mcp`). Only the Slack connector's tools are exposed, as native `mcp__slack_*` tools, alongside read-only `slack://` URLs for `read`, `glob`, and `grep`. You don't create a Slack app or OAuth client.
+An OMP plugin that reaches Slack through the **ChatGPT Slack app**. It signs in to ChatGPT with its own OAuth login and talks to the ChatGPT apps MCP gateway (`https://chatgpt.com/backend-api/ps/mcp`). Slack operations go through one discoverable `xd://slack` device, and read-only `slack://` URLs work with `read`, `glob`, and `grep`. You don't create a Slack app or OAuth client.
 
 ## Install
 
@@ -51,7 +51,20 @@ slack://acme/search?q=budget&type=files
 
 In search, `q` is split into keywords, with quoted phrases kept whole, and is also sent as the natural-language query.
 
-All other Slack operations use the Slack app's own tools, for example `mcp__slack_slack_search_public`, `mcp__slack_slack_read_user_profile`, and `mcp__slack_slack_send_message`. They are discoverable tools with the gateway's schemas, and they require approval like other write-capable tools. Tools from other ChatGPT connectors are never exposed or callable.
+All other Slack operations go through the `xd://slack` device (`write` JSON to it; `read xd://slack` shows its usage):
+
+```json
+{"op":"tools"}
+{"op":"schema","tool":"slack_search_public"}
+{"tool":"slack_search_public","args":{"keywords":["launch"],"natural_language_query":"launch plan"}}
+{"op":"workspaces"}
+{"op":"login"}
+```
+
+- `op` defaults to `call`. Tool names drop the gateway's `slack.` prefix (the prefixed form also works).
+- With several Slack workspaces, pass `team_id` in `args` where the tool's schema accepts it.
+- No gateway connection opens until Slack is first used, and no Slack tool schemas enter the model's context at load: `tools` lists names, and each schema arrives only through its own `schema` op.
+- Calls require approval like other write-capable tools. Tools from other ChatGPT connectors are never listed or callable.
 
 `slack://` is read-only. Confirm with the user before sending or scheduling messages, adding reactions, or creating/editing canvases unless they explicitly requested that exact action.
 

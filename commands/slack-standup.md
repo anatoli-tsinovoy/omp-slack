@@ -21,4 +21,4 @@ description: Build a standup update from the user's recent Slack activity.
    - None / ...
    ```
 
-6. Present the standup for review. Do not post or schedule it unless the user explicitly asked for that action; then use the matching `mcp__slack_*` tool with its schema. A request to generate a standup alone does not authorize posting.
+6. Present the standup for review. Do not post or schedule it unless the user explicitly asked for that action; then call the matching tool through `write xd://slack` with its schema. A request to generate a standup alone does not authorize posting.

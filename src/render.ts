@@ -1,4 +1,4 @@
-import type { MCPToolCallResult } from "@oh-my-pi/pi-coding-agent/mcp";
+import type { MCPToolCallResult, MCPToolDefinition } from "@oh-my-pi/pi-coding-agent/mcp";
 import type { SlackWorkspace } from "./types";
 
 const MAX_RENDERED_MCP_CHARS = 32_000;
@@ -182,4 +182,26 @@ export function renderSlackWorkspaces(workspaces: readonly SlackWorkspace[]): st
 	if (workspaces.length === 0) return "The ChatGPT Slack app reports no Slack workspaces.";
 	const rows = workspaces.map(workspace => `- ${workspace.teamName} (${workspace.teamId}) — \`slack://${encodeURIComponent(workspace.teamId)}/\``);
 	return `Slack workspaces:\n${rows.join("\n")}`;
+}
+
+/** Tool name as the model writes it: the gateway's `slack.` connector prefix dropped. */
+export function slackToolDisplayName(tool: MCPToolDefinition): string {
+	return tool.name.replace(/^slack\./u, "");
+}
+
+export function renderSlackToolList(tools: readonly MCPToolDefinition[]): string {
+	if (tools.length === 0) return "The ChatGPT Slack app exposes no tools.";
+	return [
+		"Slack tools (inspect one with `{\"op\":\"schema\",\"tool\":\"<name>\"}`):",
+		...tools.map(tool => {
+			const firstLine = tool.description?.split(/\r?\n/u, 1)[0]?.trim();
+			const readOnly = tool.annotations?.readOnlyHint ? " (read-only)" : "";
+			return `- \`${slackToolDisplayName(tool)}\`${readOnly}${firstLine ? ` — ${firstLine}` : ""}`;
+		}),
+	].join("\n");
+}
+
+export function renderSlackToolSchema(tool: MCPToolDefinition): string {
+	const description = tool.description?.trim();
+	return `\`${slackToolDisplayName(tool)}\`${description ? `\n\n${description}` : ""}\n\ninputSchema:\n\n\`\`\`json\n${JSON.stringify(tool.inputSchema, null, 2)}\n\`\`\``;
 }

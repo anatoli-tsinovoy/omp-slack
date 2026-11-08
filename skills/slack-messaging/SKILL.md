@@ -11,9 +11,9 @@ Use this skill when composing, drafting, scheduling, or improving Slack messages
 
 - Before sending or scheduling a message, adding a reaction, or creating or editing a canvas, show the exact target and proposed content/action and get the user's confirmation, unless they explicitly requested that exact action.
 - A request to draft is not permission to send. Treat saving a draft in Slack as a write: show the draft and destination and get approval before saving it with `slack_send_message_draft`.
-- Read existing context with `read slack://<ws>/...`; the URL protocol is read-only. Perform other operations with the `mcp__slack_*` tools (for example `mcp__slack_slack_send_message`). They are discoverable; activate them through tool search when they are not already loaded.
+- Read existing context with `read slack://<ws>/...`; the URL protocol is read-only. Perform other operations with `write xd://slack`: `{"op":"tools"}` lists tools, `{"op":"schema","tool":"slack_send_message"}` shows one tool's arguments, and `{"tool":"slack_send_message","args":{...}}` calls it.
 - Follow each tool's schema exactly; NEVER guess argument names. When arguments are rejected, report Slack's error text verbatim and correct them using the schema.
-- If several workspaces are connected, pass the intended workspace's `team_id` where the tool accepts one; do not guess which workspace the user means. If Slack reports that the plugin is not signed in, ask the user to run `/slack login`.
+- If several workspaces are connected, pass the intended workspace's `team_id` in `args` where the tool accepts one; do not guess which workspace the user means. If Slack reports that the plugin is not signed in, ask the user to run `/slack login`.
 
 ## Message formatting
 

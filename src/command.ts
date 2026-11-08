@@ -25,17 +25,7 @@ function isSubcommand(value: string): value is SlackSubcommand {
 	return SUBCOMMANDS.some(candidate => candidate === value);
 }
 
-export interface SlackCommandOptions {
-	/** Runs after a successful login, e.g. to register the Slack app's tools. */
-	onLogin?: () => Promise<number>;
-}
-
-async function handleSlackCommand(
-	args: string,
-	ctx: ExtensionCommandContext,
-	core: SlackCore,
-	options: SlackCommandOptions,
-): Promise<void> {
+async function handleSlackCommand(args: string, ctx: ExtensionCommandContext, core: SlackCore): Promise<void> {
 	const subcommand = args.trim().toLowerCase();
 	if (!subcommand) {
 		ctx.ui.notify(USAGE, "info");
@@ -49,7 +39,7 @@ async function handleSlackCommand(
 		switch (subcommand) {
 			case "login": {
 				const account = await core.login(authPresenter(ctx));
-				const toolCount = (await options.onLogin?.()) ?? (await core.listTools()).length;
+				const toolCount = (await core.listTools()).length;
 				const workspaces = await core.listWorkspaces();
 				ctx.ui.notify(
 					`Signed in to ChatGPT as ${account.email ?? account.accountId}; the Slack app exposes ${toolCount} tools.\n${renderSlackWorkspaces(workspaces)}`,
@@ -81,7 +71,7 @@ async function handleSlackCommand(
 	}
 }
 
-export function registerSlackCommand(pi: ExtensionAPI, core: SlackCore = slackCore, options: SlackCommandOptions = {}): void {
+export function registerSlackCommand(pi: ExtensionAPI, core: SlackCore = slackCore): void {
 	pi.registerCommand("slack", {
 		description: "Sign in to ChatGPT for Slack, sign out, or show status",
 		getArgumentCompletions: prefix => {
@@ -89,6 +79,6 @@ export function registerSlackCommand(pi: ExtensionAPI, core: SlackCore = slackCo
 			const matches = SUBCOMMANDS.filter(subcommand => subcommand.startsWith(normalized));
 			return matches.length > 0 ? matches.map(subcommand => ({ value: subcommand, label: subcommand })) : null;
 		},
-		handler: (args, ctx) => handleSlackCommand(args, ctx, core, options),
+		handler: (args, ctx) => handleSlackCommand(args, ctx, core),
 	});
 }
