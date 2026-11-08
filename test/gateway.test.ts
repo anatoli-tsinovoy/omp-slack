@@ -146,9 +146,9 @@ describe("Slack over the ChatGPT apps gateway", () => {
 			},
 		});
 
-		const account = await core.login({ onAuthUrl: url => urls.push(url) });
+		const account = await core.login({ onAuth: info => urls.push(info.url) });
 		expect(account).toMatchObject({ accountId: "acct-work", email: "me@work.example" });
-		expect(urls).toEqual(["http://localhost:1455/start"]);
+		expect(urls).toEqual(["https://auth.example/authorize?x=1"]);
 		expect(await store.load()).toMatchObject({ access: "a", refresh: "r" });
 		await core.logout();
 		expect(await store.load()).toBeUndefined();

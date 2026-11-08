@@ -21,7 +21,9 @@ OMP accepts `github:user/repo` plugin sources. Restart OMP if the current sessio
 
 ### 2. Sign in from OMP
 
-Run `/slack login` in OMP. A browser opens the ChatGPT sign-in page (OAuth callback `http://localhost:1455/auth/callback`, so port 1455 must be free). Pick the same account and ChatGPT workspace as in step 1. After sign-in, the Slack tools load into the current session.
+Run `/slack login` in OMP. Like OMP's own `/login openai-codex`, it opens a sign-in dialog that shows the full ChatGPT authorization URL, a local shortcut (`http://localhost:1455/launch`, this machine only), and a paste field, and it tries to open your browser. Pick the same account and ChatGPT workspace as in step 1. After sign-in, the Slack tools load into the current session.
+
+On a headless or remote host (SSH, containers), open the full authorization URL in a browser on any machine. Once you sign in, the browser lands on `http://localhost:1455/auth/callback?code=…`, which won't load. Copy that whole URL from the address bar and paste it into the dialog. The authorization code alone also works. When OMP runs on the same machine as the browser, the callback on port 1455 finishes sign-in without a paste.
 
 - `/slack status` shows the signed-in ChatGPT account and the Slack workspaces the app can reach.
 - `/slack logout` deletes the plugin's login.

@@ -2,6 +2,7 @@
  * Shared contract between the core (credentials + ChatGPT apps gateway client) and the surfaces
  * (Slack tools, /slack command, slack:// URLs).
  */
+import type { OAuthController } from "@oh-my-pi/pi-ai/oauth/types";
 import type { MCPToolCallResult, MCPToolDefinition } from "@oh-my-pi/pi-coding-agent/mcp";
 
 /** ChatGPT apps MCP gateway; Slack is reached through the user's installed ChatGPT Slack app. */
@@ -33,13 +34,8 @@ export interface SlackWorkspace {
  teamName: string;
 }
 
-/** Presentation hooks for the interactive ChatGPT sign-in. */
-export interface SlackAuthPresenter {
- /** Show (and ideally open) the authorization URL. */
- onAuthUrl(url: string, instructions?: string): void;
- onProgress?(message: string): void;
- signal?: AbortSignal;
-}
+/** OAuth presentation for the ChatGPT sign-in, as OMP's own `/login` drives it. */
+export type SlackAuthPresenter = Pick<OAuthController, "onAuth" | "onProgress" | "onManualCodeInput" | "signal">;
 
 export interface SlackCore {
  /** Stored login without touching the network. */

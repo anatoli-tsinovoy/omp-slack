@@ -1,8 +1,8 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import type { MCPToolDefinition } from "@oh-my-pi/pi-coding-agent/mcp";
-import { openPath } from "@oh-my-pi/pi-coding-agent/utils/open";
 import slackToolDescription from "./prompts/slack-tool.md" with { type: "text" };
 import { findSlackTool, slackCore } from "./core";
+import { runSlackLogin } from "./login";
 import {
 	renderMcpResult,
 	renderSlackToolList,
@@ -10,7 +10,7 @@ import {
 	renderSlackWorkspaces,
 	slackToolDisplayName,
 } from "./render";
-import type { SlackAuthPresenter, SlackCore } from "./types";
+import type { ChatGPTAccount, SlackCore } from "./types";
 
 export type SlackToolOperation = "call" | "tools" | "schema" | "workspaces" | "login";
 
@@ -47,15 +47,15 @@ async function requireTool(core: SlackCore, name: string | undefined, operation:
 export async function executeSlackOperation(
 	core: SlackCore,
 	input: SlackToolInput,
-	presenter?: SlackAuthPresenter,
+	login?: () => Promise<ChatGPTAccount>,
 	signal?: AbortSignal,
 ): Promise<SlackToolResult> {
 	switch (input.op ?? "call") {
 		case "workspaces":
 			return textResult(renderSlackWorkspaces(await core.listWorkspaces(signal)));
 		case "login": {
-			if (!presenter) throw new Error("ChatGPT sign-in cannot be presented here; have the user run `/slack login`.");
-			const account = await core.login(presenter);
+			if (!login) throw new Error("ChatGPT sign-in cannot be presented here; have the user run `/slack login`.");
+			const account = await login();
 			const workspaces = await core.listWorkspaces(signal);
 			return textResult(`Signed in to ChatGPT as ${account.email ?? account.accountId}.\n${renderSlackWorkspaces(workspaces)}`);
 		}
@@ -92,15 +92,7 @@ export function registerSlackTool(pi: ExtensionAPI, core: SlackCore = slackCore)
 			})
 			.strict(),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const presenter: SlackAuthPresenter = {
-				onAuthUrl(url, instructions) {
-					ctx.ui.notify(`${instructions ? `${instructions}\n\n` : ""}${url}`, "info");
-					openPath(url);
-				},
-				onProgress: message => ctx.ui.notify(message, "info"),
-				...(signal ? { signal } : {}),
-			};
-			return executeSlackOperation(core, params, presenter, signal);
+			return executeSlackOperation(core, params, () => runSlackLogin(ctx, core, signal), signal);
 		},
 	});
 }

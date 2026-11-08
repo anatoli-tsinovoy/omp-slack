@@ -138,11 +138,7 @@ export class ChatGPTAuth {
 	}
 
 	async login(presenter: SlackAuthPresenter): Promise<ChatGPTAccount> {
-		const grant = await this.#flow.login({
-			onAuth: info => presenter.onAuthUrl(info.launchUrl ?? info.url, info.instructions),
-			...(presenter.onProgress ? { onProgress: (message: string) => presenter.onProgress?.(message) } : {}),
-			...(presenter.signal ? { signal: presenter.signal } : {}),
-		});
+		const grant = await this.#flow.login(presenter);
 		const credential = toCredential(grant);
 		await this.#store.save(credential);
 		return publicAccount(credential);

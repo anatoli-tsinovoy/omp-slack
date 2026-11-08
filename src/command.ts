@@ -1,25 +1,14 @@
+import { LoginCancelledError } from "@oh-my-pi/pi-ai/error";
 import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
-import { openPath } from "@oh-my-pi/pi-coding-agent/utils/open";
 import { slackCore } from "./core";
+import { runSlackLogin } from "./login";
 import { renderSlackWorkspaces } from "./render";
-import type { SlackAuthPresenter, SlackCore } from "./types";
+import type { SlackCore } from "./types";
 
 const SUBCOMMANDS = ["login", "logout", "status"] as const;
 type SlackSubcommand = (typeof SUBCOMMANDS)[number];
 
 const USAGE = "Slack commands: /slack login, /slack logout, /slack status.";
-
-function authPresenter(ctx: ExtensionCommandContext): SlackAuthPresenter {
-	return {
-		onAuthUrl(url, instructions) {
-			ctx.ui.notify(`${instructions ? `${instructions}\n\n` : ""}${url}`, "info");
-			openPath(url);
-		},
-		onProgress(message) {
-			ctx.ui.notify(message, "info");
-		},
-	};
-}
 
 function isSubcommand(value: string): value is SlackSubcommand {
 	return SUBCOMMANDS.some(candidate => candidate === value);
@@ -38,7 +27,7 @@ async function handleSlackCommand(args: string, ctx: ExtensionCommandContext, co
 	try {
 		switch (subcommand) {
 			case "login": {
-				const account = await core.login(authPresenter(ctx));
+				const account = await runSlackLogin(ctx, core);
 				const toolCount = (await core.listTools()).length;
 				const workspaces = await core.listWorkspaces();
 				ctx.ui.notify(
@@ -67,6 +56,10 @@ async function handleSlackCommand(args: string, ctx: ExtensionCommandContext, co
 			}
 		}
 	} catch (error) {
+		if (error instanceof LoginCancelledError) {
+			ctx.ui.notify("Login cancelled", "info");
+			return;
+		}
 		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 	}
 }
