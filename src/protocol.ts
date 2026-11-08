@@ -1,5 +1,4 @@
 import type { MCPToolCallResult } from "@oh-my-pi/pi-coding-agent/mcp";
-import type { AuthStorage } from "@oh-my-pi/pi-ai";
 import type { ShellFsDirEntry } from "@oh-my-pi/pi-natives";
 import {
 	InternalUrlRouter,
@@ -10,8 +9,8 @@ import {
 	type ResolveContext,
 } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import slackProtocolDescription from "./prompts/slack-protocol.md" with { type: "text" };
-import { mcpRecords, renderMcpResult, renderSlackConversation } from "./render";
-import { slackCore } from "./core";
+import { mcpRecords, renderMcpResult, renderSlackConversation, renderSlackWorkspaces } from "./render";
+import { findSlackTool, slackCore } from "./core";
 import type { SlackCore, SlackWorkspace } from "./types";
 
 export type SlackUrlRoute =
@@ -33,7 +32,6 @@ export type SlackUrlRoute =
 	| { kind: "file"; workspace: string; fileId: string }
 	| { kind: "search"; workspace: string; query: string; scope: "public" | "all"; type?: "files" };
 
-export type SlackAuthStorageResolver = (context?: ResolveContext) => AuthStorage | undefined;
 
 type UrlToolKey =
 	| "listChannels"
@@ -47,6 +45,7 @@ type UrlToolKey =
 	| "searchAll";
 
 interface UrlToolArguments {
+	teamId?: string;
 	channel?: string;
 	channelId?: string;
 	limit?: number;
@@ -61,21 +60,38 @@ interface UrlToolArguments {
 }
 
 interface UrlToolDefinition {
+	/** Slack tool name without any gateway connector prefix. */
 	name: string;
 	args: (input: UrlToolArguments) => Record<string, unknown>;
-	discoverBeforeCall?: true;
 }
 
-/** Keep every URL-to-MCP name and argument mapping in one place. */
+/** Split a free-text query into Slack lexical terms, keeping "quoted phrases" whole. */
+export function searchKeywords(query: string): string[] {
+	return query.match(/"[^"]+"|\S+/gu) ?? [];
+}
+
+function searchArgs(input: UrlToolArguments): Record<string, unknown> {
+	const query = input.query ?? "";
+	return {
+		keywords: searchKeywords(query),
+		natural_language_query: query,
+		...(input.type === undefined ? {} : { content_types: input.type }),
+	};
+}
+
+/** Keep every URL-to-Slack-tool name and argument mapping in one place. */
 const URL_TOOL_TABLE: Record<UrlToolKey, UrlToolDefinition> = {
 	listChannels: {
 		name: "slack_list_user_channels",
-		args: () => ({}),
-		discoverBeforeCall: true,
+		args: input => ({ limit: 200, ...(input.teamId === undefined ? {} : { team_id: input.teamId }) }),
 	},
 	searchChannels: {
 		name: "slack_search_channels",
-		args: input => ({ query: input.channel ?? "" }),
+		args: input => ({
+			keywords: searchKeywords(input.channel ?? ""),
+			natural_language_query: input.channel ?? "",
+			channel_types: "public_channel,private_channel",
+		}),
 	},
 	readChannel: {
 		name: "slack_read_channel",
@@ -88,7 +104,7 @@ const URL_TOOL_TABLE: Record<UrlToolKey, UrlToolDefinition> = {
 	},
 	readThread: {
 		name: "slack_read_thread",
-		args: input => ({ channel_id: input.channelId ?? "", thread_ts: input.threadTs ?? "" }),
+		args: input => ({ channel_id: input.channelId ?? "", message_ts: input.threadTs ?? "" }),
 	},
 	readUserProfile: {
 		name: "slack_read_user_profile",
@@ -104,34 +120,18 @@ const URL_TOOL_TABLE: Record<UrlToolKey, UrlToolDefinition> = {
 	},
 	searchPublic: {
 		name: "slack_search_public",
-		args: input => ({ query: input.query ?? "", ...(input.type === undefined ? {} : { type: input.type }) }),
+		args: searchArgs,
 	},
 	searchAll: {
 		name: "slack_search_public_and_private",
-		args: input => ({ query: input.query ?? "", ...(input.type === undefined ? {} : { type: input.type }) }),
+		args: searchArgs,
 	},
 };
 
 const DIRECTORY_TYPE = "dir" as ShellFsDirEntry["fileType"];
 const FILE_TYPE = "file" as ShellFsDirEntry["fileType"];
-const activeStorageLeases = new Map<symbol, AuthStorage>();
 let processHandler: ProtocolHandler | undefined;
 let processRegistrationCount = 0;
-
-function latestAuthStorage(): AuthStorage | undefined {
-	let latest: AuthStorage | undefined;
-	for (const storage of activeStorageLeases.values()) latest = storage;
-	return latest;
-}
-
-function storageFor(context: ResolveContext | undefined, resolver: SlackAuthStorageResolver): AuthStorage {
-	const storage =
-		context?.session?.modelRegistry?.authStorage ?? context?.session?.authStorage ?? resolver(context);
-	if (!storage) {
-		throw new Error("No OMP auth storage is available for slack://. Open the plugin in an OMP session, then run `/slack login`.");
-	}
-	return storage;
-}
 
 function decodePathSegments(url: InternalUrl): string[] {
 	const rawPath = url.rawPathname ?? url.pathname;
@@ -288,26 +288,24 @@ function channelMemoKey(teamId: string, channel: string): string {
 function missingChannelResponse(result: MCPToolCallResult, channel: string): Error {
 	return new Error(`Could not resolve Slack channel \`${channel}\`. Slack MCP response:\n${renderMcpResult(result)}`);
 }
-
 async function callUrlTool(
 	core: SlackCore,
-	storage: AuthStorage,
 	workspace: SlackWorkspace,
 	key: UrlToolKey,
 	input: UrlToolArguments,
 	signal?: AbortSignal,
-) {
+): Promise<MCPToolCallResult> {
 	const definition = URL_TOOL_TABLE[key];
-	if (definition.discoverBeforeCall) {
-		const tools = await core.listTools(storage, workspace, signal);
-		if (!tools.some(tool => tool.name === definition.name)) {
-			const available = tools.map(tool => tool.name).join(", ") || "none";
-			throw new Error(
-				`This Slack MCP server does not expose \`${definition.name}\`, required to list your channels. Available tools: ${available}. Inspect \`read xd://slack\` and run \`{"op":"tools"}\` for the server's tool list.`,
-			);
-		}
+	const tools = await core.listTools(signal);
+	const tool = findSlackTool(tools, definition.name);
+	if (!tool) {
+		throw new Error(
+			`The ChatGPT Slack app does not expose \`${definition.name}\`. Available tools: ${tools.map(candidate => candidate.name).join(", ") || "none"}.`,
+		);
 	}
-	return core.callTool(storage, workspace, definition.name, definition.args(input), signal);
+	const result = await core.callTool(tool.name, definition.args({ teamId: workspace.teamId, ...input }), signal);
+	if (result.isError) throw new Error(renderMcpResult(result));
+	return result;
 }
 
 interface SlackChannel {
@@ -316,7 +314,6 @@ interface SlackChannel {
 }
 
 function readChannelRecords(result: MCPToolCallResult): SlackChannel[] {
-	if (result.isError) throw new Error(renderMcpResult(result));
 	const records = mcpRecords(result, ["channels", "results", "items", "data"]);
 	if (!records) {
 		throw new Error(`Slack channel-list response could not be interpreted. Server response:\n${renderMcpResult(result)}`);
@@ -332,19 +329,12 @@ function readChannelRecords(result: MCPToolCallResult): SlackChannel[] {
 	return channels;
 }
 
-async function listChannels(
-	core: SlackCore,
-	storage: AuthStorage,
-	workspace: SlackWorkspace,
-	signal?: AbortSignal,
-): Promise<SlackChannel[]> {
-	const result = await callUrlTool(core, storage, workspace, "listChannels", {}, signal);
-	return readChannelRecords(result);
+async function listChannels(core: SlackCore, workspace: SlackWorkspace, signal?: AbortSignal): Promise<SlackChannel[]> {
+	return readChannelRecords(await callUrlTool(core, workspace, "listChannels", {}, signal));
 }
 
 async function resolveChannelId(
 	core: SlackCore,
-	storage: AuthStorage,
 	workspace: SlackWorkspace,
 	selector: string,
 	memo: Map<string, string>,
@@ -359,8 +349,7 @@ async function resolveChannelId(
 	const cached = memo.get(key);
 	if (cached) return cached;
 
-	const result = await callUrlTool(core, storage, workspace, "searchChannels", { channel: selector }, signal);
-	if (result.isError) throw new Error(renderMcpResult(result));
+	const result = await callUrlTool(core, workspace, "searchChannels", { channel: normalizeChannelName(selector) }, signal);
 	const records = mcpRecords(result, ["channels", "results", "items", "data"]);
 	if (!records || records.length === 0) throw missingChannelResponse(result, selector);
 	const candidates = records.flatMap(record => {
@@ -378,16 +367,6 @@ async function resolveChannelId(
 	memo.set(key, candidate.id);
 	if (candidate.name) memo.set(channelMemoKey(workspace.teamId, candidate.name), candidate.id);
 	return candidate.id;
-}
-
-function workspaceRootContent(workspaces: readonly SlackWorkspace[]): string {
-	if (workspaces.length === 0) return "No Slack workspaces connected. Run `/slack login` to connect one.";
-	const rows = workspaces.map(workspace => {
-		const url = `slack://${encodeURIComponent(workspace.teamId)}/`;
-		const marker = workspace.isDefault ? " (default)" : "";
-		return `- ${workspace.teamName} (${workspace.teamId})${marker} — \`${url}\``;
-	});
-	return `# Slack workspaces\n\n${rows.join("\n")}`;
 }
 
 function workspaceRootEntries(workspaces: readonly SlackWorkspace[]): ShellFsDirEntry[] {
@@ -411,27 +390,17 @@ function resource(url: InternalUrl, content: string, isDirectory = false): Inter
 	return { url: url.href, content, contentType: "text/markdown", immutable: true, isDirectory };
 }
 
-
-export function createSlackProtocolHandler(
-	core: SlackCore = slackCore,
-	resolveStorage: SlackAuthStorageResolver = () => latestAuthStorage(),
-): ProtocolHandler {
+export function createSlackProtocolHandler(core: SlackCore = slackCore): ProtocolHandler {
 	const channelIds = new Map<string, string>();
-
-	async function workspaceFor(storage: AuthStorage, selector: string): Promise<SlackWorkspace> {
-		return core.resolveWorkspace(storage, selector);
-	}
 
 	async function resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
 		const route = parseSlackUrl(url);
-		const storage = storageFor(context, resolveStorage);
+		const signal = context?.signal;
 		switch (route.kind) {
-			case "workspaces": {
-				const workspaces = await core.listWorkspaces(storage);
-				return resource(url, workspaceRootContent(workspaces), true);
-			}
+			case "workspaces":
+				return resource(url, `# ${renderSlackWorkspaces(await core.listWorkspaces(signal))}`, true);
 			case "workspace": {
-				const workspace = await workspaceFor(storage, route.selector);
+				const workspace = await core.resolveWorkspace(route.selector, signal);
 				const urlPrefix = `slack://${encodeURIComponent(workspace.teamId)}`;
 				return resource(
 					url,
@@ -440,13 +409,12 @@ export function createSlackProtocolHandler(
 				);
 			}
 			case "channels": {
-				const workspace = await workspaceFor(storage, route.workspace);
+				const workspace = await core.resolveWorkspace(route.workspace, signal);
 				if (context?.skipDirectoryListing) return resource(url, "", true);
-				const channels = await listChannels(core, storage, workspace, context?.signal);
-				return resource(url, channelDirectoryContent(workspace, channels), true);
+				return resource(url, channelDirectoryContent(workspace, await listChannels(core, workspace, signal)), true);
 			}
 			case "users": {
-				const workspace = await workspaceFor(storage, route.workspace);
+				const workspace = await core.resolveWorkspace(route.workspace, signal);
 				return resource(
 					url,
 					`# Slack users in ${workspace.teamName}\n\nRead a profile with \`slack://${encodeURIComponent(workspace.teamId)}/users/<user-id>\` or \`/users/me\`.`,
@@ -454,65 +422,50 @@ export function createSlackProtocolHandler(
 				);
 			}
 			case "channel": {
-				const workspace = await workspaceFor(storage, route.workspace);
-				const channelId = await resolveChannelId(core, storage, workspace, route.channel, channelIds, context?.signal);
+				const workspace = await core.resolveWorkspace(route.workspace, signal);
+				const channelId = await resolveChannelId(core, workspace, route.channel, channelIds, signal);
 				const result = await callUrlTool(
 					core,
-					storage,
 					workspace,
 					"readChannel",
 					{ channelId, limit: route.limit, oldest: route.oldest, latest: route.latest },
-					context?.signal,
+					signal,
 				);
-				if (result.isError) throw new Error(renderMcpResult(result));
 				return resource(url, renderSlackConversation(result, { workspace: workspace.teamId, channel: channelId }));
 			}
 			case "thread": {
-				const workspace = await workspaceFor(storage, route.workspace);
-				const channelId = await resolveChannelId(core, storage, workspace, route.channel, channelIds, context?.signal);
-				const result = await callUrlTool(
-					core,
-					storage,
-					workspace,
-					"readThread",
-					{ channelId, threadTs: route.ts },
-					context?.signal,
-				);
-				if (result.isError) throw new Error(renderMcpResult(result));
+				const workspace = await core.resolveWorkspace(route.workspace, signal);
+				const channelId = await resolveChannelId(core, workspace, route.channel, channelIds, signal);
+				const result = await callUrlTool(core, workspace, "readThread", { channelId, threadTs: route.ts }, signal);
 				return resource(
 					url,
 					renderSlackConversation(result, { workspace: workspace.teamId, channel: channelId, threadTs: route.ts }),
 				);
 			}
 			case "user": {
-				const workspace = await workspaceFor(storage, route.workspace);
-				const result = await callUrlTool(core, storage, workspace, "readUserProfile", { userId: route.userId }, context?.signal);
-				if (result.isError) throw new Error(renderMcpResult(result));
+				const workspace = await core.resolveWorkspace(route.workspace, signal);
+				const result = await callUrlTool(core, workspace, "readUserProfile", { userId: route.userId }, signal);
 				return resource(url, `# Slack user ${route.userId}\n\n${renderMcpResult(result)}`);
 			}
 			case "canvas": {
-				const workspace = await workspaceFor(storage, route.workspace);
-				const result = await callUrlTool(core, storage, workspace, "readCanvas", { canvasId: route.canvasId }, context?.signal);
-				if (result.isError) throw new Error(renderMcpResult(result));
+				const workspace = await core.resolveWorkspace(route.workspace, signal);
+				const result = await callUrlTool(core, workspace, "readCanvas", { canvasId: route.canvasId }, signal);
 				return resource(url, `# Slack canvas ${route.canvasId}\n\n${renderMcpResult(result)}`);
 			}
 			case "file": {
-				const workspace = await workspaceFor(storage, route.workspace);
-				const result = await callUrlTool(core, storage, workspace, "readFile", { fileId: route.fileId }, context?.signal);
-				if (result.isError) throw new Error(renderMcpResult(result));
+				const workspace = await core.resolveWorkspace(route.workspace, signal);
+				const result = await callUrlTool(core, workspace, "readFile", { fileId: route.fileId }, signal);
 				return resource(url, `# Slack file ${route.fileId}\n\n${renderMcpResult(result)}`);
 			}
 			case "search": {
-				const workspace = await workspaceFor(storage, route.workspace);
+				const workspace = await core.resolveWorkspace(route.workspace, signal);
 				const result = await callUrlTool(
 					core,
-					storage,
 					workspace,
 					route.scope === "all" ? "searchAll" : "searchPublic",
 					{ query: route.query, type: route.type },
-					context?.signal,
+					signal,
 				);
-				if (result.isError) throw new Error(renderMcpResult(result));
 				return resource(url, `# Slack search: ${route.query}\n\n${renderMcpResult(result)}`);
 			}
 		}
@@ -520,19 +473,19 @@ export function createSlackProtocolHandler(
 
 	async function readDirectory(url: InternalUrl, context?: ResolveContext): Promise<ShellFsDirEntry[]> {
 		const route = parseSlackUrl(url);
-		const storage = storageFor(context, resolveStorage);
+		const signal = context?.signal;
 		switch (route.kind) {
 			case "workspaces":
-				return workspaceRootEntries(await core.listWorkspaces(storage));
+				return workspaceRootEntries(await core.listWorkspaces(signal));
 			case "workspace":
-				await workspaceFor(storage, route.selector);
+				await core.resolveWorkspace(route.selector, signal);
 				return [directoryEntry("channels", "dir"), directoryEntry("users", "dir"), directoryEntry("search", "file")];
 			case "channels": {
-				const workspace = await workspaceFor(storage, route.workspace);
-				return channelDirectoryEntries(await listChannels(core, storage, workspace, context?.signal));
+				const workspace = await core.resolveWorkspace(route.workspace, signal);
+				return channelDirectoryEntries(await listChannels(core, workspace, signal));
 			}
 			case "users":
-				await workspaceFor(storage, route.workspace);
+				await core.resolveWorkspace(route.workspace, signal);
 				return [];
 			default:
 				throw new Error(`Not a Slack directory: \`${url.href}\`.`);
@@ -541,12 +494,7 @@ export function createSlackProtocolHandler(
 
 	async function enumerate(url: InternalUrl, context?: ResolveContext): Promise<Array<{ url: string; content: string }>> {
 		const route = parseSlackUrl(url);
-		if (
-			route.kind === "workspaces" ||
-			route.kind === "workspace" ||
-			route.kind === "channels" ||
-			route.kind === "users"
-		) {
+		if (route.kind === "workspaces" || route.kind === "workspace" || route.kind === "channels" || route.kind === "users") {
 			return [];
 		}
 		const resolved = await resolve(url, context);
@@ -563,7 +511,7 @@ export function createSlackProtocolHandler(
 	};
 }
 
-/** Register the one process-global handler; returned cleanup reports the last session. */
+/** Register the one process-global handler; the returned cleanup reports whether it was the last registration. */
 export function registerSlackProtocol(core: SlackCore = slackCore): () => boolean {
 	const router = InternalUrlRouter.instance();
 	if (!processHandler) processHandler = createSlackProtocolHandler(core);
@@ -580,25 +528,10 @@ export function registerSlackProtocol(core: SlackCore = slackCore): () => boolea
 		if (processRegistrationCount !== 0) return false;
 		if (router.getHandler("slack") === processHandler) router.unregister("slack");
 		processHandler = undefined;
-		activeStorageLeases.clear();
 		return true;
-	};
-}
-
-/**
- * Fallback for callers with no session auth storage. It selects the most recently
- * started active session; concurrent profile-less URL calls cannot be disambiguated.
- */
-export function trackSlackProtocolStorage(storage: AuthStorage): () => void {
-	const lease = Symbol("slack protocol auth storage");
-	activeStorageLeases.set(lease, storage);
-	return () => {
-		activeStorageLeases.delete(lease);
 	};
 }
 
 export function parseSlackUrlString(value: string): SlackUrlRoute {
 	return parseSlackUrl(parseInternalUrl(value));
 }
-
-

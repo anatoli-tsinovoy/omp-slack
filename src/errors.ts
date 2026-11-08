@@ -18,10 +18,3 @@ export class SlackAuthError extends Error {
   this.name = "SlackAuthError";
  }
 }
-
-export class SlackConfigError extends Error {
- constructor(message: string, options?: ErrorOptions) {
-  super(message, options);
-  this.name = "SlackConfigError";
- }
-}

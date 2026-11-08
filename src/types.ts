@@ -1,30 +1,41 @@
 /**
- * Shared contract between the auth/client core and the surfaces (xd://slack tool, /slack command, slack:// URLs).
- * Core owns: src/config.ts, src/auth.ts, src/client.ts. Surfaces own: src/tool.ts, src/command.ts, src/protocol.ts, src/index.ts.
+ * Shared contract between the core (credentials + ChatGPT apps gateway client) and the surfaces
+ * (Slack tools, /slack command, slack:// URLs).
  */
-import type { AuthStorage } from "@oh-my-pi/pi-ai";
 import type { MCPToolCallResult, MCPToolDefinition } from "@oh-my-pi/pi-coding-agent/mcp";
 
-export const SLACK_MCP_URL = "https://mcp.slack.com/mcp";
+/** ChatGPT apps MCP gateway; Slack is reached through the user's installed ChatGPT Slack app. */
+export const CHATGPT_APPS_MCP_URL = "https://chatgpt.com/backend-api/ps/mcp";
+/** Connector id of the ChatGPT Slack app (Settings → Plugins → Slack). */
+export const SLACK_CONNECTOR_ID = "asdk_app_69a1d78e929881919bba0dbda1f6436d";
+/** Server name used to mint OMP tool names (`mcp__slack_<tool>`), matching a native `slack` MCP server. */
+export const SLACK_SERVER_NAME = "slack";
 
-/** A Slack workspace the user has authorized. Persisted (with tokens) in OMP auth storage. */
+/** The plugin's own ChatGPT login; never shared with OMP's openai-codex credentials. */
+export interface ChatGPTCredential {
+ access: string;
+ refresh: string;
+ /** Epoch ms. */
+ expires: number;
+ /** ChatGPT workspace id, sent as `ChatGPT-Account-ID`. */
+ accountId: string;
+ email?: string;
+}
+
+/** Non-secret view of the stored login. */
+export interface ChatGPTAccount {
+ email?: string;
+ accountId: string;
+ expires: number;
+}
+
+/** A Slack workspace reported by the connector's `slack_list_workspaces`. */
 export interface SlackWorkspace {
  teamId: string;
  teamName: string;
- /** Workspace subdomain, e.g. "acme" for acme.slack.com, when known. */
- domain?: string;
- userId: string;
- /** True for the workspace used when no selector is supplied. */
- isDefault: boolean;
 }
 
-/** Slack app credentials used for user-token OAuth. A PKCE public client may omit its secret. */
-export interface SlackClientCredentials {
- clientId: string;
- clientSecret?: string;
-}
-
-/** Presentation hooks for the interactive OAuth flow; surfaces adapt ctx.ui / pi.exec into this. */
+/** Presentation hooks for the interactive ChatGPT sign-in. */
 export interface SlackAuthPresenter {
  /** Show (and ideally open) the authorization URL. */
  onAuthUrl(url: string, instructions?: string): void;
@@ -33,32 +44,23 @@ export interface SlackAuthPresenter {
 }
 
 export interface SlackCore {
- /** Authorized workspaces, default first. Never touches the network. */
- listWorkspaces(storage: AuthStorage): Promise<SlackWorkspace[]>;
+ /** Stored login without touching the network. */
+ account(): Promise<ChatGPTAccount | undefined>;
+ /** Interactive ChatGPT sign-in; replaces any previous plugin login. */
+ login(presenter: SlackAuthPresenter): Promise<ChatGPTAccount>;
+ /** Forget the plugin login and close connections. */
+ logout(): Promise<void>;
+ /** Slack tools of the ChatGPT Slack connector, memoized until logout or tools/list_changed. */
+ listTools(signal?: AbortSignal): Promise<MCPToolDefinition[]>;
+ /** Call one Slack connector tool; other gateway tools are refused. */
+ callTool(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<MCPToolCallResult>;
+ /** Workspaces from `slack_list_workspaces`, memoized per login. */
+ listWorkspaces(signal?: AbortSignal): Promise<SlackWorkspace[]>;
  /**
-  * Resolve a selector (team id, team name, domain, case-insensitive) to a workspace.
-  * `undefined` → default workspace, or the only one. Throws SlackNotConnectedError / SlackAmbiguousWorkspaceError
-  * with messages that tell the agent exactly what to do next.
+  * Resolve a team id or name (case-insensitive). `undefined` → the only workspace.
+  * Throws SlackNotConnectedError / SlackAmbiguousWorkspaceError with next-step guidance.
   */
- resolveWorkspace(storage: AuthStorage, selector?: string): Promise<SlackWorkspace>;
- /** Run user OAuth (optionally pinned to a team id) and persist the workspace. First workspace becomes default. */
- connectWorkspace(storage: AuthStorage, presenter: SlackAuthPresenter, opts?: { team?: string }): Promise<SlackWorkspace>;
- /** Save app credentials to the active profile's auth storage. */
- saveClientCredentials(storage: AuthStorage, credentials: SlackClientCredentials): Promise<void>;
- /** Remove app credentials from auth storage; environment overrides remain active. */
- clearClientCredentials(storage: AuthStorage): Promise<void>;
- disconnectWorkspace(storage: AuthStorage, selector: string): Promise<SlackWorkspace>;
- setDefaultWorkspace(storage: AuthStorage, selector: string): Promise<SlackWorkspace>;
- /** Lazily connects (initialize only, no tools/list), refreshes on expiry/401 once, reuses the connection per workspace. */
- callTool(
-  storage: AuthStorage,
-  workspace: SlackWorkspace,
-  tool: string,
-  args: Record<string, unknown>,
-  signal?: AbortSignal,
- ): Promise<MCPToolCallResult>;
- /** tools/list for the workspace, memoized in-process per workspace. */
- listTools(storage: AuthStorage, workspace: SlackWorkspace, signal?: AbortSignal): Promise<MCPToolDefinition[]>;
- /** Close every live MCP connection (session_shutdown). */
+ resolveWorkspace(selector?: string, signal?: AbortSignal): Promise<SlackWorkspace>;
+ /** Close the live gateway connection (session_shutdown). */
  closeAll(): Promise<void>;
 }

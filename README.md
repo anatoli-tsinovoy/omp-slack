@@ -1,6 +1,6 @@
 # omp-slack
 
-A standalone OMP plugin for Slack's hosted MCP server. It accesses Slack as your user account: reads use `slack://` URLs, other Slack tools use `xd://slack`, and no MCP connection opens until Slack is first used. It requests no bot scopes, subscribes to no events, and uses no Socket Mode.
+An OMP plugin that reaches Slack through the **ChatGPT Slack app**. It signs in to ChatGPT with its own OAuth login and talks to the ChatGPT apps MCP gateway (`https://chatgpt.com/backend-api/ps/mcp`). Only the Slack connector's tools are exposed, as native `mcp__slack_*` tools, alongside read-only `slack://` URLs for `read`, `glob`, and `grep`. You don't create a Slack app or OAuth client.
 
 ## Install
 
@@ -8,41 +8,37 @@ A standalone OMP plugin for Slack's hosted MCP server. It accesses Slack as your
 omp plugin install github:anatoli-tsinovoy/omp-slack
 ```
 
-OMP accepts `github:user/repo` plugin sources. Use the CLI so OMP records the installed package and runtime state; restart OMP if the current session does not discover the plugin.
+OMP accepts `github:user/repo` plugin sources. Restart OMP if the current session does not discover the plugin. Requires OMP 18.18.1 or newer.
 
-## One-time Slack app setup
+## Setup
 
-1. In your Slack org, create an internal app from [`slack-app-manifest.json`](./slack-app-manifest.json). It registers the default callback `http://localhost:3118/callback` and enables PKCE plus token rotation for refresh.
-   If you set `OMP_SLACK_CALLBACK_PORT`, also add `http://localhost:<port>/callback` to `oauth_config.redirect_urls`; Slack requires the callback URI to match exactly.
-2. Have a workspace/org admin approve the app and allow Slack MCP access if required by your organization's app or MCP policies. Slack's hosted MCP server supports internal apps and lets admins manage approvals.
-3. Copy the app's **Client ID**. `/slack setup` requires it; the masked **Client Secret** prompt may be left empty for this PKCE public-client flow. Alternatively, set `OMP_SLACK_CLIENT_ID` and, if using a secret, `OMP_SLACK_CLIENT_SECRET`. Environment values take precedence over saved values.
-4. Run `/slack login` and authorize your user account in the target workspace. Repeat login for each workspace you want to connect.
+### 1. Install Slack in ChatGPT
 
-The manifest uses the schema fields `oauth_config.redirect_urls`, `oauth_config.pkce_enabled`, `oauth_config.scopes.user`, and `settings.token_rotation_enabled`; it contains user scopes only. See the [Slack app manifest reference](https://docs.slack.dev/reference/app-manifest/), [Slack MCP server guide](https://docs.slack.dev/ai/slack-mcp-server/), and [Slack PKCE guide](https://docs.slack.dev/authentication/using-pkce/).
+1. Sign in at [chatgpt.com](https://chatgpt.com) with the account and ChatGPT workspace that should reach Slack (for a work Slack, use your work ChatGPT workspace).
+2. Open **Settings → Plugins**, choose **Slack**, and connect it to your Slack workspace. Your ChatGPT workspace admin may need to enable the Slack app first.
 
-**Skipping app creation (unverified):** Slack's own plugin configs ship public, secret-less client IDs: Claude Code `1601185624273.8899143856786` with callback port `3118` (matches the default here), Cursor `3660753192626.8903469228982`. Setting `OMP_SLACK_CLIENT_ID` to one of them runs the same PKCE flow under that app's identity. Whether Slack completes the exchange for a non-Claude/Cursor client, and whether that app grants every scope requested here, has not been tested; your workspace must also have approved that app. Fall back to the internal app above if login fails.
+![ChatGPT Settings → Plugins with the Slack plugin installed](docs/chatgpt-slack-plugin.png)
+
+### 2. Sign in from OMP
+
+Run `/slack login` in OMP. A browser opens the ChatGPT sign-in page (OAuth callback `http://localhost:1455/auth/callback`, so port 1455 must be free). Pick the same account and ChatGPT workspace as in step 1. After sign-in, the Slack tools load into the current session.
+
+- `/slack status` shows the signed-in ChatGPT account and the Slack workspaces the app can reach.
+- `/slack logout` deletes the plugin's login.
+
+## Credentials
+
+- The login is stored only in `~/.omp/agent/omp-slack/chatgpt-auth.json`, or `chatgpt-auth.<profile>.json` under a non-default OMP profile. The directory is mode `0700` and the file `0600`.
+- It is separate from OMP's own logins. `/login openai-codex` and OMP's auth database are neither read nor changed, so the plugin can use a different ChatGPT workspace than your model provider.
+- The access token is refreshed with the stored refresh token before it expires, and again after a `401` from the gateway. Neither case needs a new browser sign-in. Concurrent OMP processes pick up each other's rotated tokens from the file.
+- A refresh that returns a different ChatGPT workspace is rejected; run `/slack login` again to switch.
 
 ## Use
 
-Inspect available tools and a tool's live schema with `write` to `xd://slack`:
-
-```json
-{"op":"tools"}
-{"op":"schema","tool":"slack_search_public"}
-{"op":"connect"}
-```
-
-Call Slack MCP tools through the same device, using their live schema for `args` and choosing the workspace explicitly when needed:
-
-```json
-{"tool":"slack_search_public","args":{...},"workspace":"acme"}
-```
-
-Do not guess argument fields. If the server rejects arguments, use its schema and preserve its error text verbatim.
-
-Read Slack data directly with `read` (and use `grep` or `glob` on Slack URLs when useful):
+Read Slack data with `read` (and `grep` or `glob` on Slack URLs). `slack://` lists the connected workspaces; other URLs start with a workspace selector, either the team ID or the name:
 
 ```text
+slack://
 slack://acme/channels/
 slack://acme/channels/engineering
 slack://acme/threads/C123456/1712345678.123456
@@ -53,16 +49,16 @@ slack://acme/search?q=launch%20plan&scope=all
 slack://acme/search?q=budget&type=files
 ```
 
+In search, `q` is split into keywords, with quoted phrases kept whole, and is also sent as the natural-language query.
+
+All other Slack operations use the Slack app's own tools, for example `mcp__slack_slack_search_public`, `mcp__slack_slack_read_user_profile`, and `mcp__slack_slack_send_message`. They are discoverable tools with the gateway's schemas, and they require approval like other write-capable tools. Tools from other ChatGPT connectors are never exposed or callable.
+
 `slack://` is read-only. Confirm with the user before sending or scheduling messages, adding reactions, or creating/editing canvases unless they explicitly requested that exact action.
 
-## Workspaces and included prompts
-
-Use `/slack status` to see connected workspaces, `/slack default` to choose the default, and `/slack logout` to remove a workspace authorization. URLs and tool calls can specify a workspace; an omitted selector uses the configured default when unambiguous.
+## Included prompts
 
 Bundled skills: `slack-search`, `slack-messaging`. Bundled workflow commands are namespaced with `slack-`: `/slack-summarize-channel`, `/slack-find-discussions`, `/slack-draft-announcement`, `/slack-standup`, and `/slack-channel-digest`.
 
-**Privacy:** User OAuth tokens and client credentials entered through `/slack setup` are stored in OMP auth storage; environment credentials remain in your environment. Access is as your Slack user under the scopes you approved; protect the relevant OMP profile or environment.
-
-**Avoid duplicate Slack skills:** Do not also run `npx skills add slackapi/slack-skills-plugin`. Its same-named skills target raw MCP tools rather than this plugin's `xd://slack` and `slack://` surfaces.
+**Avoid duplicate Slack skills:** Do not also run `npx skills add slackapi/slack-skills-plugin`. Its same-named skills target a different tool surface.
 
 **NOTICE:** The `slack-search` and `slack-messaging` skills and five workflow commands are adapted from Slack's `slackapi/slack-skills-plugin` (MIT; Copyright (c) 2020- Slack Technologies, LLC). See [`skills/UPSTREAM-LICENSE`](./skills/UPSTREAM-LICENSE).

@@ -1,138 +1,56 @@
 import { expect, test } from "bun:test";
-import type { AuthStorage } from "@oh-my-pi/pi-ai";
 import type { MCPToolCallResult, MCPToolDefinition } from "@oh-my-pi/pi-coding-agent/mcp";
-import { executeSlackOperation } from "../src/tool";
-import type { SlackAuthPresenter, SlackCore, SlackWorkspace } from "../src/types";
+import { outboundArguments, slackToolDefinition } from "../src/tool";
+import type { SlackCore } from "../src/types";
 
-const storage = {} as AuthStorage;
-const workspace: SlackWorkspace = {
-	teamId: "T123",
-	teamName: "Acme",
-	userId: "U456",
-	isDefault: true,
-};
-const searchTool: MCPToolDefinition = {
-	name: "slack_search_public",
-	description: "Search public Slack messages.\nMore details.",
-	inputSchema: { type: "object", properties: { query: { type: "string" } } },
+const readChannel: MCPToolDefinition = {
+	name: "slack.slack_read_channel",
+	description: "Reads a channel",
+	inputSchema: {
+		type: "object",
+		properties: { channel_id: { type: "string" }, cursor: { type: "string" } },
+		required: ["channel_id"],
+	},
+	annotations: { readOnlyHint: true },
 };
 
-class FakeSlackCore implements SlackCore {
-	callError: Error | undefined;
-	callResult: MCPToolCallResult = { content: [{ type: "text", text: "ok" }] };
-	tools: MCPToolDefinition[] = [searchTool];
-	resolvedSelector: string | undefined;
-	callArguments: { tool: string; args: Record<string, unknown> }[] = [];
-	listedTools = 0;
-	connectedTeam: string | undefined;
-
-	async listWorkspaces(): Promise<SlackWorkspace[]> {
-		return [workspace];
-	}
-
-	async resolveWorkspace(_storage: AuthStorage, selector?: string): Promise<SlackWorkspace> {
-		this.resolvedSelector = selector;
-		return workspace;
-	}
-
-	async connectWorkspace(
-		_storage: AuthStorage,
-		_presenter: SlackAuthPresenter,
-		opts?: { team?: string },
-	): Promise<SlackWorkspace> {
-		this.connectedTeam = opts?.team;
-		return workspace;
-	}
-
-	async saveClientCredentials(): Promise<void> { }
-
-	async clearClientCredentials(): Promise<void> { }
-
-	async disconnectWorkspace(): Promise<SlackWorkspace> {
-		return workspace;
-	}
-
-	async setDefaultWorkspace(): Promise<SlackWorkspace> {
-		return workspace;
-	}
-
-	async callTool(
-		_storage: AuthStorage,
-		_workspace: SlackWorkspace,
-		tool: string,
-		args: Record<string, unknown>,
-	): Promise<MCPToolCallResult> {
-		this.callArguments.push({ tool, args });
-		if (this.callError) throw this.callError;
-		return this.callResult;
-	}
-
-	async listTools(): Promise<MCPToolDefinition[]> {
-		this.listedTools++;
-		return this.tools;
-	}
-
-	async closeAll(): Promise<void> { }
+function coreReturning(result: MCPToolCallResult, calls: Array<{ tool: string; args: Record<string, unknown> }>): SlackCore {
+	const unused = async (): Promise<never> => {
+		throw new Error("unused");
+	};
+	return {
+		account: unused,
+		login: unused,
+		logout: unused,
+		listTools: unused,
+		listWorkspaces: unused,
+		resolveWorkspace: unused,
+		closeAll: unused,
+		async callTool(tool, args) {
+			calls.push({ tool, args });
+			return result;
+		},
+	};
 }
 
-test("call dispatch forwards tool arguments and preserves MCP error text", async () => {
-	const core = new FakeSlackCore();
-	const result = await executeSlackOperation(core, storage, {
-		op: "call",
-		tool: "slack_search_public",
-		args: { query: "release notes" },
-		workspace: "T123",
-	});
-	expect(core.resolvedSelector).toBe("T123");
-	expect(core.callArguments).toEqual([{ tool: "slack_search_public", args: { query: "release notes" } }]);
-	expect(result.content[0]?.text).toBe("ok");
-
-	core.callResult = { isError: true, content: [{ type: "text", text: "invalid Slack MCP arguments" }] };
-	const serverError = await executeSlackOperation(core, storage, {
-		op: "call",
-		tool: "slack_search_public",
-	});
-	expect(serverError.content[0]?.text).toBe("invalid Slack MCP arguments");
-
-	core.callResult = {
-		content: [{ type: "text", text: "concise output" }],
-		structuredContent: { remaining: 1 },
-	};
-	const structured = await executeSlackOperation(core, storage, {
-		op: "call",
-		tool: "slack_search_public",
-	});
-	expect(structured.content[0]?.text).toContain("concise output");
-	expect(structured.content[0]?.text).toContain('"remaining": 1');
-
-	core.callError = new Error("Slack workspace token expired; run /slack login");
-	await expect(
-		executeSlackOperation(core, storage, { op: "call", tool: "slack_search_public" }),
-	).rejects.toThrow("Slack workspace token expired; run /slack login");
+test("outbound arguments drop the harness intent field and empty optionals, but keep declared fields", () => {
+	expect(outboundArguments({ i: "Reading channel", channel_id: "C1", cursor: null }, readChannel.inputSchema)).toEqual({ channel_id: "C1" });
+	const declaresIntent: MCPToolDefinition["inputSchema"] = { type: "object", properties: { i: { type: "string" } } };
+	expect(outboundArguments({ i: "kept" }, declaresIntent)).toEqual({ i: "kept" });
+	expect(outboundArguments({ channel_id: null }, readChannel.inputSchema)).toEqual({ channel_id: null });
 });
 
-test("tools and schema operations expose the server's current tool contract", async () => {
-	const core = new FakeSlackCore();
-	const tools = await executeSlackOperation(core, storage, { op: "tools", workspace: "Acme" });
-	expect(tools.content[0]?.text).toContain("`slack_search_public` — Search public Slack messages.");
-	expect(core.listedTools).toBe(1);
+test("Slack tools take the native slack MCP name and surface Slack error results as tool errors", async () => {
+	const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+	const definition = slackToolDefinition(
+		readChannel,
+		coreReturning({ content: [{ type: "text", text: "channel_not_found" }], isError: true }, calls),
+	);
+	expect(definition.name).toBe("mcp__slack_slack_read_channel");
+	expect(definition.mcpToolName).toBe("slack.slack_read_channel");
 
-	const schema = await executeSlackOperation(core, storage, { op: "schema", tool: "slack_search_public" });
-	expect(schema.content[0]?.text).toContain('"query"');
-	expect(core.listedTools).toBe(2);
-	await expect(
-		executeSlackOperation(core, storage, { op: "schema", tool: "missing" }),
-	).rejects.toThrow('Available tools: slack_search_public');
-});
-
-test("connect accepts the optional team selector and workspaces are local", async () => {
-	const core = new FakeSlackCore();
-	const presenter: SlackAuthPresenter = { onAuthUrl: () => { } };
-	const connected = await executeSlackOperation(core, storage, { op: "connect", team: "T123" }, presenter);
-	expect(core.connectedTeam).toBe("T123");
-	expect(connected.content[0]?.text).toContain("Acme (T123)");
-
-	const workspaces = await executeSlackOperation(core, storage, { op: "workspaces" });
-	expect(workspaces.content[0]?.text).toContain("Acme (T123) (default)");
-	expect(core.listedTools).toBe(0);
+	const result = await definition.execute("call-1", { i: "Reading", channel_id: "C404" }, undefined, undefined, undefined as never);
+	expect(calls).toEqual([{ tool: "slack.slack_read_channel", args: { channel_id: "C404" } }]);
+	expect(result.isError).toBe(true);
+	expect(JSON.stringify(result.content)).toContain("channel_not_found");
 });

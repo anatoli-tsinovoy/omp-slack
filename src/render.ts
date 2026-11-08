@@ -1,4 +1,4 @@
-import type { MCPToolCallResult, MCPToolDefinition } from "@oh-my-pi/pi-coding-agent/mcp";
+import type { MCPToolCallResult } from "@oh-my-pi/pi-coding-agent/mcp";
 import type { SlackWorkspace } from "./types";
 
 const MAX_RENDERED_MCP_CHARS = 32_000;
@@ -179,26 +179,7 @@ export function renderSlackConversation(
 }
 
 export function renderSlackWorkspaces(workspaces: readonly SlackWorkspace[]): string {
-	if (workspaces.length === 0) return "No Slack workspaces connected. Run `/slack login` to connect one.";
-	const rows = workspaces.map(workspace => {
-		const marker = workspace.isDefault ? " (default)" : "";
-		const domain = workspace.domain ? ` — ${workspace.domain}.slack.com` : "";
-		return `- ${workspace.teamName} (${workspace.teamId})${marker}${domain}`;
-	});
-	return `Connected Slack workspaces:\n${rows.join("\n")}`;
-}
-
-export function renderSlackToolList(tools: readonly MCPToolDefinition[]): string {
-	if (tools.length === 0) return "This Slack MCP server exposes no tools.";
-	return [
-		"Slack MCP tools:",
-		...tools.map(tool => {
-			const firstLine = tool.description?.split(/\r?\n/u, 1)[0]?.trim();
-			return `- \`${tool.name}\`${firstLine ? ` — ${firstLine}` : ""}`;
-		}),
-	].join("\n");
-}
-
-export function renderSlackToolSchema(tool: MCPToolDefinition): string {
-	return `\`${tool.name}\` inputSchema:\n\n\`\`\`json\n${JSON.stringify(tool.inputSchema, null, 2) ?? String(tool.inputSchema)}\n\`\`\``;
+	if (workspaces.length === 0) return "The ChatGPT Slack app reports no Slack workspaces.";
+	const rows = workspaces.map(workspace => `- ${workspace.teamName} (${workspace.teamId}) — \`slack://${encodeURIComponent(workspace.teamId)}/\``);
+	return `Slack workspaces:\n${rows.join("\n")}`;
 }

@@ -1,273 +1,211 @@
 import {
- callTool as callMCPTool,
- connectToServer,
- disconnectServer,
- listTools as listMCPTools,
+	callTool as callMCPTool,
+	connectToServer,
+	disconnectServer,
+	listTools as listMCPTools,
 } from "@oh-my-pi/pi-coding-agent/mcp";
-import type { MCPHttpServerConfig, MCPServerConnection, MCPToolCallResult, MCPToolDefinition } from "@oh-my-pi/pi-coding-agent/mcp";
-import type { AuthStorage } from "@oh-my-pi/pi-ai";
+import type {
+	MCPHttpServerConfig,
+	MCPServerConnection,
+	MCPToolCallResult,
+	MCPToolDefinition,
+} from "@oh-my-pi/pi-coding-agent/mcp";
 import { MCPTransportError } from "@oh-my-pi/pi-coding-agent/mcp/errors";
 import { HttpTransport } from "@oh-my-pi/pi-coding-agent/mcp/transports/http";
-import { slackWorkspaceCredentialId } from "./config";
+import type { ChatGPTAuth } from "./credentials";
 import { SlackAuthError } from "./errors";
-import type { SlackAuthService } from "./auth";
-import { SLACK_MCP_URL, type SlackWorkspace } from "./types";
+import { CHATGPT_APPS_MCP_URL, type ChatGPTCredential, SLACK_CONNECTOR_ID } from "./types";
 
-export interface SlackClientOptions {
- endpoint?: string;
+export interface SlackGatewayOptions {
+	endpoint?: string;
+	connectorId?: string;
+	/** Called when the gateway announces `notifications/tools/list_changed`. */
+	onToolsChanged?: () => void;
 }
 
-interface ConnectionEntry {
- key: string;
- connection: MCPServerConnection;
- accessToken: string;
- activeCalls: number;
- retired: boolean;
- closed: Promise<void>;
- resolveClosed: () => void;
- closePromise?: Promise<void>;
- authRecovery?: Promise<Record<string, string>>;
- recoveredAccessToken?: string;
-}
-
-interface PendingConnection {
- accessToken: string;
- promise: Promise<ConnectionEntry>;
+interface GatewayConnection {
+	connection: MCPServerConnection;
+	/** Access token the transport currently sends. */
+	access: string;
+	active: number;
+	retired: boolean;
+	closing?: Promise<void>;
 }
 
 function isHttpAuthFailure(error: unknown): error is MCPTransportError {
- return (
-  error instanceof MCPTransportError &&
-  error.failure === "http_status" &&
-  (error.code === 401 || error.code === 403)
- );
+	return error instanceof MCPTransportError && error.failure === "http_status" && (error.code === 401 || error.code === 403);
 }
 
-function authenticationRetryError(workspace: SlackWorkspace, cause: unknown): SlackAuthError {
- return new SlackAuthError(
-  `Slack rejected the refreshed token for ${workspace.teamName} (${workspace.teamId}). Have the user run \`/slack login ${workspace.teamId}\`.`,
-  { cause },
- );
+function rejectedLogin(cause: unknown): SlackAuthError {
+	return new SlackAuthError(
+		"ChatGPT rejected the Slack plugin's refreshed login. Have the user run `/slack login`.",
+		{ cause },
+	);
 }
 
-export class SlackMCPClient {
- readonly #auth: SlackAuthService;
- readonly #endpoint: string;
- readonly #connections = new Map<string, ConnectionEntry>();
- readonly #connecting = new Map<string, PendingConnection>();
- readonly #allConnections = new Set<ConnectionEntry>();
- readonly #toolLists = new Map<string, Promise<MCPToolDefinition[]>>();
+/** Honest OMP identity plus the ChatGPT workspace the plugin login belongs to. */
+export function gatewayHeaders(credential: ChatGPTCredential): Record<string, string> {
+	return {
+		Authorization: `Bearer ${credential.access}`,
+		"ChatGPT-Account-ID": credential.accountId,
+		"X-OpenAI-Product-Sku": "codex",
+		originator: "omp",
+	};
+}
 
- constructor(auth: SlackAuthService, options: SlackClientOptions = {}) {
-  this.#auth = auth;
-  this.#endpoint = options.endpoint ?? SLACK_MCP_URL;
- }
+/** ChatGPT returns `structuredContent: null` for absent payloads; MCP models it as an optional record. */
+function normalizeResult(result: MCPToolCallResult): MCPToolCallResult {
+	const structured: unknown = result.structuredContent;
+	if (structured !== null) return result;
+	const { structuredContent: _absent, ...rest } = result;
+	return rest;
+}
 
- async callTool(
-  storage: AuthStorage,
-  workspace: SlackWorkspace,
-  tool: string,
-  args: Record<string, unknown>,
-  signal?: AbortSignal,
- ): Promise<MCPToolCallResult> {
-  signal?.throwIfAborted();
-  const accessToken = await this.#auth.getAccessToken(storage, workspace);
-  const entry = await this.#connectionFor(storage, workspace, accessToken);
-  entry.activeCalls += 1;
-  try {
-   return await callMCPTool(entry.connection, tool, args, signal ? { signal } : undefined);
-  } catch (error) {
-   if (isHttpAuthFailure(error)) throw authenticationRetryError(workspace, error);
-   throw error;
-  } finally {
-   this.#release(entry);
-  }
- }
+/**
+ * One lazily-opened connection to the ChatGPT apps MCP gateway. Only tools whose
+ * `_meta.connector_id` is the ChatGPT Slack app are listed or callable.
+ */
+export class SlackGatewayClient {
+	readonly #auth: ChatGPTAuth;
+	readonly #endpoint: string;
+	readonly #connectorId: string;
+	readonly #onToolsChanged: (() => void) | undefined;
+	#entry: Promise<GatewayConnection> | undefined;
+	#tools: Promise<MCPToolDefinition[]> | undefined;
 
- async listTools(
-  storage: AuthStorage,
-  workspace: SlackWorkspace,
-  signal?: AbortSignal,
- ): Promise<MCPToolDefinition[]> {
-  signal?.throwIfAborted();
-  const key = slackWorkspaceCredentialId(workspace.teamId);
-  const cached = this.#toolLists.get(key);
-  if (cached) return cached;
+	constructor(auth: ChatGPTAuth, options: SlackGatewayOptions = {}) {
+		this.#auth = auth;
+		this.#endpoint = options.endpoint ?? CHATGPT_APPS_MCP_URL;
+		this.#connectorId = options.connectorId ?? SLACK_CONNECTOR_ID;
+		this.#onToolsChanged = options.onToolsChanged;
+	}
 
-  const pending = this.#listToolsUncached(storage, workspace, signal);
-  this.#toolLists.set(key, pending);
-  try {
-   return await pending;
-  } catch (error) {
-   if (this.#toolLists.get(key) === pending) this.#toolLists.delete(key);
-   throw error;
-  }
- }
+	listTools(signal?: AbortSignal): Promise<MCPToolDefinition[]> {
+		signal?.throwIfAborted();
+		if (!this.#tools) {
+			const pending = this.#withConnection(signal, async entry => {
+				entry.connection.tools = undefined;
+				const all = await listMCPTools(entry.connection, signal ? { signal } : undefined);
+				return all.filter(tool => tool._meta?.connector_id === this.#connectorId);
+			});
+			this.#tools = pending;
+			pending.catch(() => {
+				if (this.#tools === pending) this.#tools = undefined;
+			});
+		}
+		return this.#tools;
+	}
 
- async closeWorkspace(workspace: SlackWorkspace): Promise<void> {
-  const key = slackWorkspaceCredentialId(workspace.teamId);
-  this.#toolLists.delete(key);
-  const entry = this.#connections.get(key);
-  if (entry) await this.#retire(entry);
-  const pending = this.#connecting.get(key);
-  if (pending) {
-   const connected = await pending.promise.catch(() => undefined);
-   if (connected) await this.#retire(connected);
-  }
- }
+	async callTool(tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<MCPToolCallResult> {
+		const tools = await this.listTools(signal);
+		if (!tools.some(candidate => candidate.name === tool)) {
+			throw new Error(
+				`\`${tool}\` is not a tool of the ChatGPT Slack app. Available: ${tools.map(candidate => candidate.name).join(", ") || "none"}.`,
+			);
+		}
+		return this.#withConnection(signal, async entry =>
+			normalizeResult(await callMCPTool(entry.connection, tool, args, signal ? { signal } : undefined)),
+		);
+	}
 
- async closeAll(): Promise<void> {
-  this.#toolLists.clear();
-  await Promise.allSettled([...this.#connecting.values()].map(pending => pending.promise));
-  await Promise.allSettled([...this.#allConnections].map(entry => this.#retire(entry)));
-  this.#connections.clear();
-  this.#connecting.clear();
-  this.#allConnections.clear();
- }
+	/** Drop the cached tool list and connection (logout, re-login). */
+	async reset(): Promise<void> {
+		this.#tools = undefined;
+		await this.closeAll();
+	}
 
- async #listToolsUncached(
-  storage: AuthStorage,
-  workspace: SlackWorkspace,
-  signal?: AbortSignal,
- ): Promise<MCPToolDefinition[]> {
-  const accessToken = await this.#auth.getAccessToken(storage, workspace);
-  const entry = await this.#connectionFor(storage, workspace, accessToken);
-  entry.activeCalls += 1;
-  try {
-   return await listMCPTools(entry.connection, signal ? { signal } : undefined);
-  } catch (error) {
-   if (isHttpAuthFailure(error)) throw authenticationRetryError(workspace, error);
-   throw error;
-  } finally {
-   this.#release(entry);
-  }
- }
+	async closeAll(): Promise<void> {
+		const pending = this.#entry;
+		this.#entry = undefined;
+		const entry = await pending?.catch(() => undefined);
+		if (entry) await this.#retire(entry);
+	}
 
- async #connectionFor(
-  storage: AuthStorage,
-  workspace: SlackWorkspace,
-  accessToken: string,
- ): Promise<ConnectionEntry> {
-  const key = slackWorkspaceCredentialId(workspace.teamId);
-  const current = this.#connections.get(key);
-  if (current && !current.retired && current.accessToken === accessToken) return current;
-  if (current && !current.retired) {
-   const latestAccessToken = await this.#auth.getAccessToken(storage, workspace);
-   if (latestAccessToken !== accessToken) {
-    return this.#connectionFor(storage, workspace, latestAccessToken);
-   }
-   if (current.accessToken === latestAccessToken) return current;
-  }
-  if (current) void this.#retire(current).catch(() => { });
+	async #withConnection<T>(signal: AbortSignal | undefined, run: (entry: GatewayConnection) => Promise<T>): Promise<T> {
+		const entry = await this.#acquire(signal);
+		entry.active += 1;
+		try {
+			return await run(entry);
+		} catch (error) {
+			if (isHttpAuthFailure(error)) throw rejectedLogin(error);
+			throw error;
+		} finally {
+			entry.active -= 1;
+			if (entry.retired && entry.active === 0) void this.#close(entry);
+		}
+	}
 
-  const pending = this.#connecting.get(key);
-  if (pending) {
-   const connected = await pending.promise;
-   if (!connected.retired && connected.accessToken === accessToken) return connected;
-   const latestAccessToken = await this.#auth.getAccessToken(storage, workspace);
-   return this.#connectionFor(storage, workspace, latestAccessToken);
-  }
+	async #acquire(signal?: AbortSignal): Promise<GatewayConnection> {
+		const credential = await this.#auth.current(signal);
+		const pending = this.#entry;
+		if (pending) {
+			const entry = await pending.catch(() => undefined);
+			if (entry && !entry.retired && entry.access === credential.access) return entry;
+			if (this.#entry === pending) {
+				this.#entry = undefined;
+				if (entry) void this.#retire(entry);
+			}
+			if (this.#entry) return this.#acquire(signal);
+		}
+		const opening = this.#open(credential, signal);
+		this.#entry = opening;
+		opening.catch(() => {
+			if (this.#entry === opening) this.#entry = undefined;
+		});
+		return opening;
+	}
 
-  const promise = this.#connectWithRecovery(storage, workspace, key, accessToken).then(entry => {
-   this.#connections.set(key, entry);
-   this.#allConnections.add(entry);
-   return entry;
-  });
-  const newPending = { accessToken, promise };
-  this.#connecting.set(key, newPending);
-  try {
-   return await promise;
-  } finally {
-   if (this.#connecting.get(key) === newPending) this.#connecting.delete(key);
-  }
- }
+	async #open(credential: ChatGPTCredential, signal?: AbortSignal): Promise<GatewayConnection> {
+		let current = credential;
+		let connection: MCPServerConnection;
+		try {
+			connection = await this.#connect(current, signal);
+		} catch (error) {
+			if (!isHttpAuthFailure(error)) throw error;
+			current = await this.#auth.recover(current.access, signal);
+			try {
+				connection = await this.#connect(current, signal);
+			} catch (retryError) {
+				if (isHttpAuthFailure(retryError)) throw rejectedLogin(retryError);
+				throw retryError;
+			}
+		}
+		const entry: GatewayConnection = { connection, access: current.access, active: 0, retired: false };
+		if (connection.transport instanceof HttpTransport) {
+			connection.transport.onAuthError = async () => {
+				const recovered = await this.#auth.recover(entry.access);
+				entry.access = recovered.access;
+				return gatewayHeaders(recovered);
+			};
+		}
+		return entry;
+	}
 
- async #connectWithRecovery(
-  storage: AuthStorage,
-  workspace: SlackWorkspace,
-  key: string,
-  initialAccessToken: string,
- ): Promise<ConnectionEntry> {
-  try {
-   return await this.#connectOnce(workspace, key, initialAccessToken, storage);
-  } catch (error) {
-   if (!isHttpAuthFailure(error)) throw error;
-   const refreshed = await this.#auth.refreshAfterAuthError(storage, workspace, initialAccessToken);
-   try {
-    return await this.#connectOnce(workspace, key, refreshed, storage);
-   } catch (retryError) {
-    if (isHttpAuthFailure(retryError)) throw authenticationRetryError(workspace, retryError);
-    throw retryError;
-   }
-  }
- }
+	#connect(credential: ChatGPTCredential, signal?: AbortSignal): Promise<MCPServerConnection> {
+		const config: MCPHttpServerConfig = {
+			type: "http",
+			url: this.#endpoint,
+			headerPolicy: "origin-locked",
+			headers: gatewayHeaders(credential),
+		};
+		return connectToServer("slack", config, {
+			...(signal ? { signal } : {}),
+			onNotification: method => {
+				if (method !== "notifications/tools/list_changed") return;
+				this.#tools = undefined;
+				this.#onToolsChanged?.();
+			},
+		});
+	}
 
- async #connectOnce(
-  workspace: SlackWorkspace,
-  key: string,
-  accessToken: string,
-  storage: AuthStorage,
- ): Promise<ConnectionEntry> {
-  const config: MCPHttpServerConfig = {
-   type: "http",
-   url: this.#endpoint,
-   headers: { Authorization: `Bearer ${accessToken}` },
-  };
-  const connection = await connectToServer(`slack:${workspace.teamId}`, config);
-  const { promise: closed, resolve: resolveClosed } = Promise.withResolvers<void>();
-  const entry: ConnectionEntry = {
-   key,
-   connection,
-   accessToken,
-   activeCalls: 0,
-   retired: false,
-   closed,
-   resolveClosed,
-  };
-  if (connection.transport instanceof HttpTransport) {
-   connection.transport.onAuthError = () => {
-    if (entry.authRecovery) return entry.authRecovery;
-    if (entry.recoveredAccessToken) {
-     return Promise.resolve({ Authorization: `Bearer ${entry.accessToken}` });
-    }
-    const rejectedAccessToken = entry.accessToken;
-    const recovery = this.#auth
-     .refreshAfterAuthError(storage, workspace, rejectedAccessToken)
-     .then(refreshed => {
-      entry.recoveredAccessToken = rejectedAccessToken;
-      entry.accessToken = refreshed;
-      return { Authorization: `Bearer ${refreshed}` };
-     })
-     .finally(() => {
-      entry.authRecovery = undefined;
-     });
-    entry.authRecovery = recovery;
-    return recovery;
-   };
-  }
-  return entry;
- }
+	#retire(entry: GatewayConnection): Promise<void> {
+		entry.retired = true;
+		if (entry.active > 0) return Promise.resolve();
+		return this.#close(entry);
+	}
 
- #release(entry: ConnectionEntry): void {
-  entry.activeCalls -= 1;
-  if (entry.retired && entry.activeCalls === 0) {
-   void this.#closeEntry(entry).catch(() => { });
-  }
- }
-
- #retire(entry: ConnectionEntry): Promise<void> {
-  entry.retired = true;
-  if (this.#connections.get(entry.key) === entry) this.#connections.delete(entry.key);
-  if (entry.activeCalls === 0) return this.#closeEntry(entry);
-  return entry.closed;
- }
-
- #closeEntry(entry: ConnectionEntry): Promise<void> {
-  if (entry.closePromise) return entry.closePromise;
-  entry.closePromise = disconnectServer(entry.connection).finally(() => {
-   this.#allConnections.delete(entry);
-   entry.resolveClosed();
-  });
-  return entry.closePromise;
- }
+	#close(entry: GatewayConnection): Promise<void> {
+		entry.closing ??= disconnectServer(entry.connection).catch(() => { });
+		return entry.closing;
+	}
 }

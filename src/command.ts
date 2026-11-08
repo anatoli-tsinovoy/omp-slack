@@ -1,43 +1,13 @@
-import type { AuthStorage } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
 import { openPath } from "@oh-my-pi/pi-coding-agent/utils/open";
-import { renderSlackWorkspaces } from "./render";
 import { slackCore } from "./core";
-import type { SlackAuthPresenter, SlackCore, SlackWorkspace } from "./types";
+import { renderSlackWorkspaces } from "./render";
+import type { SlackAuthPresenter, SlackCore } from "./types";
 
-const SUBCOMMANDS = ["setup", "login", "logout", "status", "default"] as const;
+const SUBCOMMANDS = ["login", "logout", "status"] as const;
 type SlackSubcommand = (typeof SUBCOMMANDS)[number];
 
-export interface SlackCommandController {
-	refreshWorkspaceCompletions(storage: AuthStorage): Promise<void>;
-}
-
-function parseCommandLine(args: string): { subcommand: string; value: string } {
-	const trimmed = args.trim();
-	const separator = trimmed.search(/\s/u);
-	if (separator < 0) return { subcommand: trimmed.toLowerCase(), value: "" };
-	return {
-		subcommand: trimmed.slice(0, separator).toLowerCase(),
-		value: trimmed.slice(separator).trim(),
-	};
-}
-
-function commandUsage(subcommand?: string): string {
-	switch (subcommand) {
-		case "login":
-			return "Usage: /slack login [team-id]";
-		case "logout":
-			return "Usage: /slack logout <workspace>";
-		case "default":
-			return "Usage: /slack default <workspace>";
-		case "setup":
-			return "Usage: /slack setup";
-		case "status":
-			return "Usage: /slack status";
-		default:
-			return "Slack commands: /slack setup, /slack login [team-id], /slack logout <workspace>, /slack status, /slack default <workspace>.";
-	}
-}
+const USAGE = "Slack commands: /slack login, /slack logout, /slack status.";
 
 function authPresenter(ctx: ExtensionCommandContext): SlackAuthPresenter {
 	return {
@@ -51,103 +21,58 @@ function authPresenter(ctx: ExtensionCommandContext): SlackAuthPresenter {
 	};
 }
 
+function isSubcommand(value: string): value is SlackSubcommand {
+	return SUBCOMMANDS.some(candidate => candidate === value);
+}
 
-function workspaceCompletions(prefix: string, workspaces: readonly SlackWorkspace[]) {
-	const separator = prefix.search(/\s/u);
-	if (separator < 0) {
-		const normalized = prefix.toLowerCase();
-		return SUBCOMMANDS
-			.filter(subcommand => subcommand.startsWith(normalized))
-			.map(subcommand => ({ value: subcommand, label: subcommand }));
-	}
-
-	const rawSubcommand = prefix.slice(0, separator);
-	const subcommand = rawSubcommand.toLowerCase();
-	if (subcommand !== "login" && subcommand !== "logout" && subcommand !== "default") return null;
-	const selectorPrefix = prefix.slice(separator + 1).trimStart().toLowerCase();
-	const matches = workspaces.filter(workspace =>
-		[workspace.teamId, workspace.teamName, workspace.domain ?? ""].some(value => value.toLowerCase().startsWith(selectorPrefix)),
-	);
-	if (matches.length === 0) return null;
-	return matches.map(workspace => ({
-		value: `${rawSubcommand} ${workspace.teamId} `,
-		label: `${workspace.teamName} (${workspace.teamId})${workspace.isDefault ? " (default)" : ""}`,
-		description: workspace.domain,
-	}));
+export interface SlackCommandOptions {
+	/** Runs after a successful login, e.g. to register the Slack app's tools. */
+	onLogin?: () => Promise<number>;
 }
 
 async function handleSlackCommand(
 	args: string,
 	ctx: ExtensionCommandContext,
 	core: SlackCore,
-	setCompletions: (workspaces: SlackWorkspace[]) => void,
+	options: SlackCommandOptions,
 ): Promise<void> {
-	const { subcommand, value } = parseCommandLine(args);
+	const subcommand = args.trim().toLowerCase();
 	if (!subcommand) {
-		ctx.ui.notify(commandUsage(), "info");
+		ctx.ui.notify(USAGE, "info");
 		return;
 	}
-	if (!SUBCOMMANDS.some(candidate => candidate === subcommand)) {
-		ctx.ui.notify(commandUsage(), "error");
+	if (!isSubcommand(subcommand)) {
+		ctx.ui.notify(USAGE, "error");
 		return;
 	}
-	if ((subcommand === "setup" || subcommand === "status") && value) {
-		ctx.ui.notify(commandUsage(subcommand), "error");
-		return;
-	}
-	if ((subcommand === "logout" || subcommand === "default") && !value) {
-		ctx.ui.notify(commandUsage(subcommand), "error");
-		return;
-	}
-
-	const storage = ctx.modelRegistry.authStorage;
 	try {
-		switch (subcommand as SlackSubcommand) {
-			case "setup": {
-				const clientIdInput = await ctx.ui.input("Slack app client ID", "Client ID from your Slack app");
-				if (clientIdInput === undefined) return;
-				const clientId = clientIdInput.trim();
-				if (!clientId) {
-					ctx.ui.notify("A Slack app client ID is required.", "error");
+		switch (subcommand) {
+			case "login": {
+				const account = await core.login(authPresenter(ctx));
+				const toolCount = (await options.onLogin?.()) ?? (await core.listTools()).length;
+				const workspaces = await core.listWorkspaces();
+				ctx.ui.notify(
+					`Signed in to ChatGPT as ${account.email ?? account.accountId}; the Slack app exposes ${toolCount} tools.\n${renderSlackWorkspaces(workspaces)}`,
+					"info",
+				);
+				return;
+			}
+			case "logout":
+				await core.logout();
+				ctx.ui.notify("Signed out of the Slack plugin's ChatGPT login.", "info");
+				return;
+			case "status": {
+				const account = await core.account();
+				if (!account) {
+					ctx.ui.notify("Not signed in. Run `/slack login` to sign in with ChatGPT.", "info");
 					return;
 				}
-				const clientSecret = await ctx.ui.input(
-					"Slack app client secret (optional)",
-					"Leave blank for a public-client PKCE flow",
-					{ secret: true },
+				const tools = await core.listTools();
+				const workspaces = await core.listWorkspaces();
+				ctx.ui.notify(
+					`ChatGPT login: ${account.email ?? "unknown email"} (workspace ${account.accountId}). Slack app tools: ${tools.length}.\n${renderSlackWorkspaces(workspaces)}`,
+					"info",
 				);
-				if (clientSecret === undefined) return;
-				await core.saveClientCredentials(storage, {
-					clientId,
-					...(clientSecret.trim() ? { clientSecret } : {}),
-				});
-				ctx.ui.notify("Slack app credentials saved for this OMP profile.", "info");
-				return;
-			}
-			case "login": {
-				const team = value || undefined;
-				const workspace = await core.connectWorkspace(storage, authPresenter(ctx), team ? { team } : undefined);
-				setCompletions(await core.listWorkspaces(storage));
-				ctx.ui.notify(`Connected to ${workspace.teamName} (${workspace.teamId}).`, "info");
-				return;
-			}
-			case "logout": {
-				const workspace = await core.disconnectWorkspace(storage, value);
-				setCompletions(await core.listWorkspaces(storage));
-				ctx.ui.notify(`Logged out of ${workspace.teamName} (${workspace.teamId}).`, "info");
-				return;
-			}
-			case "status": {
-				const workspaces = await core.listWorkspaces(storage);
-				setCompletions(workspaces);
-				ctx.ui.notify(renderSlackWorkspaces(workspaces), "info");
-				return;
-			}
-			case "default": {
-				const workspace = await core.setDefaultWorkspace(storage, value);
-				const workspaces = await core.listWorkspaces(storage);
-				setCompletions(workspaces);
-				ctx.ui.notify(`Default Slack workspace is now ${workspace.teamName} (${workspace.teamId}).`, "info");
 				return;
 			}
 		}
@@ -156,19 +81,14 @@ async function handleSlackCommand(
 	}
 }
 
-export function registerSlackCommand(pi: ExtensionAPI, core: SlackCore = slackCore): SlackCommandController {
-	let workspaces: SlackWorkspace[] = [];
-	const setCompletions = (next: SlackWorkspace[]) => {
-		workspaces = next;
-	};
+export function registerSlackCommand(pi: ExtensionAPI, core: SlackCore = slackCore, options: SlackCommandOptions = {}): void {
 	pi.registerCommand("slack", {
-		description: "Set up, connect, and manage Slack workspaces",
-		getArgumentCompletions: prefix => workspaceCompletions(prefix, workspaces),
-		handler: (args, ctx) => handleSlackCommand(args, ctx, core, setCompletions),
-	});
-	return {
-		async refreshWorkspaceCompletions(storage) {
-			workspaces = await core.listWorkspaces(storage);
+		description: "Sign in to ChatGPT for Slack, sign out, or show status",
+		getArgumentCompletions: prefix => {
+			const normalized = prefix.trim().toLowerCase();
+			const matches = SUBCOMMANDS.filter(subcommand => subcommand.startsWith(normalized));
+			return matches.length > 0 ? matches.map(subcommand => ({ value: subcommand, label: subcommand })) : null;
 		},
-	};
+		handler: (args, ctx) => handleSlackCommand(args, ctx, core, options),
+	});
 }

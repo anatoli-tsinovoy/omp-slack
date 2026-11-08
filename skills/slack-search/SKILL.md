@@ -9,11 +9,10 @@ Use this skill when locating Slack messages, conversations, files, channels, or 
 
 ## Access and workspace selection
 
-- Use a workspace selector such as its team ID, name, or domain in every `slack://` URL and tool call. If the intended workspace is unclear, ask instead of searching another one.
-- Read Slack data with `read slack://<ws>/...`. The protocol is read-only; use `write xd://slack` for every other operation.
-- If no workspace is authorized, connect with `write xd://slack` and `{"op":"connect"}`, or ask the user to run `/slack login`.
-- Discover available tools with `write xd://slack` and `{"op":"tools"}`. Get a tool's live argument schema with `{"op":"schema","tool":"slack_search_public"}`.
-- Call tools only through `write xd://slack`, using `{"tool":"slack_...","args":{...},"workspace":"<ws>"}`. Use the live schema; NEVER guess unknown arguments. If Slack rejects arguments, report its error text verbatim and correct them from the schema.
+- Use a workspace selector (team ID or name) in every `slack://` URL. If the intended workspace is unclear, ask instead of searching another one.
+- Read Slack data with `read slack://<ws>/...`. The protocol is read-only; every other operation uses the `mcp__slack_*` tools, which are discoverable through tool search.
+- If Slack reports that the plugin is not signed in, ask the user to run `/slack login`.
+- Follow each tool's schema (for example `mcp__slack_slack_search_public`); NEVER guess unknown arguments. If Slack rejects arguments, report its error text verbatim and correct them from the schema.
 
 ## Read and search URLs
 
@@ -28,7 +27,7 @@ Use this skill when locating Slack messages, conversations, files, channels, or 
 
 Example: `read slack://acme/search?q=launch%20plan&scope=all`
 
-For channel or user discovery not available through a URL, use `slack_search_channels` or `slack_search_users` through `xd://slack`, after checking the live schema.
+For channel or user discovery not available through a URL, use `mcp__slack_slack_search_channels` or `mcp__slack_slack_search_users`, following their schemas.
 
 ## Search strategy
 
