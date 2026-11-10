@@ -1,6 +1,6 @@
 import type { MCPToolCallResult } from "@oh-my-pi/pi-coding-agent/mcp";
 import { findSlackTool } from "./core";
-import { linkSlackThreads, renderMcpResult } from "./render";
+import { linkSlackThreads, renderMcpResult, type SlackThreadLink, xdSlackThreadLink } from "./render";
 import type { SlackCore, SlackWorkspace } from "./types";
 
 /** Curated `xd://slack` reads: workspace and channel names resolve to ids, and history links its threads. */
@@ -65,17 +65,17 @@ function normalizeChannelName(name: string): string {
 	return name.trim().replace(/^#/u, "").toLowerCase();
 }
 
-function isChannelId(selector: string): boolean {
+export function isChannelId(selector: string): boolean {
 	return /^[CDG][A-Z0-9]{6,}$/u.test(selector);
 }
 
-interface SlackChannel {
+export interface SlackChannel {
 	id: string;
 	name: string;
 }
 
 /** `### #name` / `- **ID:** C…` entries of `slack_list_user_channels`. */
-function listedChannels(text: string): SlackChannel[] {
+export function listedChannels(text: string): SlackChannel[] {
 	return [...text.matchAll(/^### #(\S+)\s*\n- \*\*ID:\*\* ([CDG][A-Z0-9]+)/gmu)].map(([, name = "", id = ""]) => ({ id, name }));
 }
 
@@ -88,7 +88,8 @@ function searchedChannels(text: string): SlackChannel[] {
 	});
 }
 
-export function createSlackReads(core: SlackCore): SlackReads {
+/** `threadLink` formats the thread links added to history and search results. */
+export function createSlackReads(core: SlackCore, threadLink: SlackThreadLink = xdSlackThreadLink): SlackReads {
 	const channelIds = new Map<string, string>();
 
 	async function call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
@@ -159,7 +160,7 @@ export function createSlackReads(core: SlackCore): SlackReads {
 						},
 						signal,
 					);
-					return linkSlackThreads(history, workspace.teamId);
+					return linkSlackThreads(history, workspace.teamId, threadLink);
 				}
 				case "thread": {
 					const channel = await resolveChannelId(workspace, required(op, "channel", input.channel), signal);
@@ -188,7 +189,7 @@ export function createSlackReads(core: SlackCore): SlackReads {
 						},
 						signal,
 					);
-					return linkSlackThreads(results, workspace.teamId);
+					return linkSlackThreads(results, workspace.teamId, threadLink);
 				}
 			}
 		},

@@ -10,6 +10,7 @@ Use this skill when locating Slack messages, conversations, files, channels, or 
 ## Access and workspace selection
 
 - Every Slack operation is a `write` of JSON to `xd://slack`.
+- The same reads are read-only `slack://` URLs for OMP's `read`, `glob`, and `grep` tools (see below).
 - `{"op":"workspaces"}` lists connected workspaces. With several, pass `"workspace":"<team id or name>"` on every read; if the intended workspace is unclear, ask instead of searching another one.
 - If Slack reports that the plugin is not signed in, ask the user to run `/slack login`.
 
@@ -25,6 +26,12 @@ Use this skill when locating Slack messages, conversations, files, channels, or 
 Example: `{"op":"search","query":"\"launch plan\" in:#product after:2026-01-01","scope":"all"}`
 
 For people or channel discovery beyond these ops, call `slack_search_users` or `slack_search_channels` with `{"tool":"...","args":{...}}` after checking `{"op":"schema","tool":"..."}`. NEVER guess arguments; if Slack rejects them, report its error text verbatim and correct them from the schema.
+
+## Slack as files: `slack://`
+
+- `read slack://` lists workspaces; `read slack://<workspace>/channels/` lists your channels. The workspace is a team name or ID.
+- `slack://<workspace>/channels/<name or id>?limit=&oldest=&latest=` is a channel's history, `threads/<channel>/<ts>` a thread, `users/<id or me>`, `canvases/<id>`, and `files/<id>` the matching records, and `search?q=…&scope=all&type=files&limit=` a search. Messages with replies link their `slack://…/threads/…` URL; read it to follow the thread.
+- `grep "<pattern>" slack://<workspace>/channels/<name>` searches the recent history you'd read. `grep` reads every channel it walks, so name the channels or use a glob like `eng-*`; for workspace-wide questions, use Slack search instead.
 
 ## Search strategy
 

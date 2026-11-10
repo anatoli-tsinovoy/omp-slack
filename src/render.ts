@@ -107,16 +107,17 @@ export function mcpRecords(result: MCPToolCallResult, keys: readonly string[]): 
 	return records?.filter(isJsonRecord);
 }
 
+/** How a reader opens one thread: an `xd://slack` op or a `slack://` URL. */
+export type SlackThreadLink = (workspace: string, channel: string, ts: string) => string;
+
 /** The `xd://slack` call that reads a thread, as the model writes it. */
-function slackThreadOp(workspace: string, channel: string, ts: string): string {
-	return JSON.stringify({ op: "thread", workspace, channel, ts });
-}
+export const xdSlackThreadLink: SlackThreadLink = (workspace, channel, ts) => `\`${JSON.stringify({ op: "thread", workspace, channel, ts })}\``;
 
 /**
  * After each message with replies in the Slack app's channel history (`Thread: N replies`) or search results
- * (`Reply count: N`), add the `thread` op that reads it. The channel comes from the nearest `Channel: … (C…)` line.
+ * (`Reply count: N`), add the link that reads it. The channel comes from the nearest `Channel: … (C…)` line.
  */
-export function linkSlackThreads(text: string, workspace: string): string {
+export function linkSlackThreads(text: string, workspace: string, threadLink: SlackThreadLink): string {
 	let channel: string | undefined;
 	let messageTs: string | undefined;
 	return text
@@ -127,7 +128,7 @@ export function linkSlackThreads(text: string, workspace: string): string {
 			const ts = line.match(/^Message[ _]TS: (\d+\.\d+)\s*$/iu)?.[1];
 			if (ts) messageTs = ts;
 			if (!channel || !messageTs || !/^(?:Thread: [1-9]\d* repl|Reply count: [1-9])/u.test(line)) return line;
-			return `${line} — read: \`${slackThreadOp(workspace, channel, messageTs)}\``;
+			return `${line} — read: ${threadLink(workspace, channel, messageTs)}`;
 		})
 		.join("\n");
 }

@@ -1,6 +1,6 @@
 # omp-slack
 
-An OMP plugin that reaches Slack through the **ChatGPT Slack app**. It signs in to ChatGPT with its own OAuth login and talks to the ChatGPT apps MCP gateway (`https://chatgpt.com/backend-api/ps/mcp`). Every Slack operation, read or write, goes through one discoverable `xd://slack` device. You don't create a Slack app or OAuth client.
+An OMP plugin that reaches Slack through the **ChatGPT Slack app**. It signs in to ChatGPT with its own OAuth login and talks to the ChatGPT apps MCP gateway (`https://chatgpt.com/backend-api/ps/mcp`). Every Slack operation, read or write, goes through one discoverable `xd://slack` device, and read-only `slack://` URLs expose the same reads to OMP's `read`, `glob`, and `grep` tools. You don't create a Slack app or OAuth client.
 
 ## Install
 
@@ -73,6 +73,30 @@ Any other Slack app tool is called directly:
 - Approval tiers: the read ops, `tools`, `schema`, `workspaces`, and calls to the Slack app's read tools (`slack_read_*`, `slack_search_*`, `slack_list_*`, `slack_get_reactions`) run at the `read` tier. Sending, scheduling, reactions, canvas edits, membership changes, uploads, and `login` run at `write`. Tools from other ChatGPT connectors are never listed or callable.
 
 Confirm with the user before sending or scheduling messages, adding reactions, or creating/editing canvases unless they explicitly requested that exact action.
+
+## `slack://` files
+
+OMP's `read`, `glob`, and `grep` tools also see Slack as a read-only tree. The workspace is a team name or ID:
+
+| URL | Reads as |
+| --- | --- |
+| `slack://` | connected workspaces |
+| `slack://Acme/channels/` | channels you're in; each entry is a file holding that channel's recent history |
+| `slack://Acme/channels/<name or id>?limit=&oldest=&latest=` | channel history; `:N-M` selects lines |
+| `slack://Acme/threads/<channel>/<ts>` | one thread |
+| `slack://Acme/users/<id or me>`, `canvases/<id>`, `files/<id>` | a profile, canvas, or file |
+| `slack://Acme/search?q=…&scope=all&type=files&limit=` | search results, with the same query handling as the `search` op |
+
+```text
+read  slack://Acme/channels/engineering?limit=50
+glob  slack://Acme/channels/eng-*
+grep  "release" slack://Acme/channels/eng-*
+```
+
+- Content is the Slack app's own text, the same as the read ops return. Messages with replies link their thread as a `slack://…/threads/…` URL.
+- Channel names resolve through your channel list, then through channel search for public channels you haven't joined. `channels/` lists only what the Slack app returns for your channel list (up to 200); its heading says when that is partial.
+- Listings and texts are kept for 60 seconds. `glob` needs only the channel list; `grep` reads the history of every channel it walks, so name the channels.
+- OMP refuses `write` and `edit` on `slack://`; sending and other changes go through `xd://slack`. Loading fails if another plugin already owns `slack://`.
 
 ## Included prompts
 
