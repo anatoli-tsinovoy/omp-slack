@@ -11,10 +11,15 @@ import type {
 	MCPToolDefinition,
 } from "@oh-my-pi/pi-coding-agent/mcp";
 import { MCPTransportError } from "@oh-my-pi/pi-coding-agent/mcp/errors";
-import { HttpTransport } from "@oh-my-pi/pi-coding-agent/mcp/transports/http";
 import type { ChatGPTAuth } from "./credentials";
 import { SlackAuthError } from "./errors";
 import { CHATGPT_APPS_MCP_URL, type ChatGPTCredential, SLACK_CONNECTOR_ID } from "./types";
+
+// #connect always uses an HTTP config, so the transport is omp's HttpTransport. Its class
+// lives under a private import path omp 19 no longer resolves, so type the hook directly.
+type AuthRefreshTransport = MCPServerConnection["transport"] & {
+	onAuthError?: () => Promise<Record<string, string> | null>;
+};
 
 export interface SlackGatewayOptions {
 	endpoint?: string;
@@ -171,13 +176,11 @@ export class SlackGatewayClient {
 			}
 		}
 		const entry: GatewayConnection = { connection, access: current.access, active: 0, retired: false };
-		if (connection.transport instanceof HttpTransport) {
-			connection.transport.onAuthError = async () => {
-				const recovered = await this.#auth.recover(entry.access);
-				entry.access = recovered.access;
-				return gatewayHeaders(recovered);
-			};
-		}
+		(connection.transport as AuthRefreshTransport).onAuthError = async () => {
+			const recovered = await this.#auth.recover(entry.access);
+			entry.access = recovered.access;
+			return gatewayHeaders(recovered);
+		};
 		return entry;
 	}
 
