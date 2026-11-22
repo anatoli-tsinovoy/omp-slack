@@ -3,11 +3,15 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import type { OAuthCredentials } from "@oh-my-pi/pi-ai/oauth/types";
+import { LocalMcpHost } from "@oh-my-pi/pi-coding-agent/mcp/host/local";
+import { mcpUpstreams } from "@oh-my-pi/pi-coding-agent/mcp/host/peers";
+import { McpStore } from "@oh-my-pi/pi-coding-agent/mcp/host/store";
+import type { SlackGatewayOptions } from "../src/client";
 import { createSlackCore } from "../src/core";
-import { ChatGPTCredentialStore, type ChatGPTOAuthFlow } from "../src/credentials";
+import { ChatGPTCredentialStore, type ChatGPTAuthOptions, type ChatGPTOAuthFlow } from "../src/credentials";
 import { SlackAuthError, SlackNotConnectedError } from "../src/errors";
-import type { ChatGPTCredential } from "../src/types";
-import { createFakeGateway, type FakeGateway } from "./fixtures/fake-mcp";
+import { SLACK_CONNECTOR_ID, type ChatGPTCredential } from "../src/types";
+import { createFakeGateway, FAKE_GATEWAY_TOOLS, type FakeGateway } from "./fixtures/fake-mcp";
 
 const HOUR = 3_600_000;
 const cleanups: Array<() => Promise<void>> = [];
@@ -26,6 +30,18 @@ function gateway(options?: Parameters<typeof createFakeGateway>[0]): FakeGateway
 	const fake = createFakeGateway(options);
 	cleanups.push(() => fake.stop());
 	return fake;
+}
+
+function coreWithGateway(
+	fake: FakeGateway,
+	auth: ChatGPTAuthOptions,
+	options: Omit<SlackGatewayOptions, "endpoint" | "access"> = {},
+) {
+	const access = new LocalMcpHost({ store: McpStore.memory(), upstreams: mcpUpstreams });
+	cleanups.push(() => access.dispose());
+	const core = createSlackCore({ auth, gateway: { ...options, endpoint: fake.endpoint, access } });
+	cleanups.push(() => core.closeAll());
+	return core;
 }
 
 function credential(overrides: Partial<ChatGPTCredential> = {}): ChatGPTCredential {
@@ -56,8 +72,12 @@ describe("Slack over the ChatGPT apps gateway", () => {
 		const fake = gateway();
 		const store = await tempStore();
 		await store.save(credential());
-		const core = createSlackCore({ auth: { store, flow: refreshFlow(() => { throw new Error("no refresh"); }) }, gateway: { endpoint: fake.endpoint } });
-		cleanups.push(() => core.closeAll());
+		const core = coreWithGateway(fake, {
+			store,
+			flow: refreshFlow(() => {
+				throw new Error("no refresh");
+			}),
+		});
 
 		const tools = await core.listTools();
 		expect(tools.map(tool => tool.name)).toEqual(["slack.slack_list_workspaces", "slack.slack_read_channel"]);
@@ -67,13 +87,50 @@ describe("Slack over the ChatGPT apps gateway", () => {
 		expect(fake.requests.filter(request => request.method === "tools/call")).toHaveLength(1);
 	});
 
+	test("notifications refresh the Slack-only tool list", async () => {
+		const fake = gateway();
+		const store = await tempStore();
+		await store.save(credential());
+		const changed = Promise.withResolvers<void>();
+		let changeCount = 0;
+		const core = coreWithGateway(fake, { store, flow: refreshFlow(() => { throw new Error("no refresh"); }) }, {
+			onToolsChanged() {
+				changeCount++;
+				changed.resolve();
+			},
+		});
+
+		expect((await core.listTools()).map(tool => tool.name)).toEqual([
+			"slack.slack_list_workspaces",
+			"slack.slack_read_channel",
+		]);
+		await fake.waitForSse();
+		fake.setTools([
+			...FAKE_GATEWAY_TOOLS,
+			{
+				name: "slack.slack_send_message",
+				description: "Sends a message",
+				inputSchema: { type: "object" },
+				_meta: { connector_id: SLACK_CONNECTOR_ID },
+			},
+		]);
+		fake.notifyToolsChanged();
+		await changed.promise;
+
+		expect(changeCount).toBe(1);
+		expect((await core.listTools()).map(tool => tool.name)).toEqual([
+			"slack.slack_list_workspaces",
+			"slack.slack_read_channel",
+			"slack.slack_send_message",
+		]);
+	});
+
 	test("an expired login refreshes before connecting and persists the rotated grant privately", async () => {
 		const fake = gateway({ rejectedTokens: new Set(["access-1"]) });
 		const store = await tempStore();
 		await store.save(credential({ expires: Date.now() - 1 }));
 		const flow = refreshFlow(() => ({ access: "access-2", refresh: "refresh-2", expires: Date.now() + HOUR, accountId: "acct-work" }));
-		const core = createSlackCore({ auth: { store, flow }, gateway: { endpoint: fake.endpoint } });
-		cleanups.push(() => core.closeAll());
+		const core = coreWithGateway(fake, { store, flow });
 
 		expect(await core.listWorkspaces()).toEqual([{ teamId: "T1", teamName: "Simply" }]);
 		expect(flow.refreshed.map(grant => grant.refresh)).toEqual(["refresh-1"]);
@@ -84,14 +141,54 @@ describe("Slack over the ChatGPT apps gateway", () => {
 		expect((await stat(path.dirname(store.filePath))).mode & 0o777).toBe(0o700);
 	});
 
+	test("a gateway 401 during hosted connection refreshes through onAuthError", async () => {
+		const fake = gateway({ rejectedTokens: new Set(["access-1"]) });
+		const store = await tempStore();
+		await store.save(credential());
+		const flow = refreshFlow(() => ({ access: "access-2", refresh: "refresh-2", expires: Date.now() + HOUR, accountId: "acct-work" }));
+		const core = coreWithGateway(fake, { store, flow });
+
+		expect((await core.listTools()).map(tool => tool.name)).toHaveLength(2);
+		expect(flow.refreshed).toHaveLength(1);
+		expect(bearerTokens(fake)).toContain("access-1");
+		expect(bearerTokens(fake).at(-1)).toBe("access-2");
+		expect((await store.load())?.refresh).toBe("refresh-2");
+	});
+
+	test("configured authentication headers never cross an origin-locked redirect", async () => {
+		const forwarded: Array<{ authorization: string | null; accountId: string | null; originator: string | null }> = [];
+		const foreign = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			async fetch(request) {
+				const payload: unknown = await request.json();
+				const id = typeof payload === "object" && payload !== null && "id" in payload ? payload.id : null;
+				forwarded.push({
+					authorization: request.headers.get("Authorization"),
+					accountId: request.headers.get("ChatGPT-Account-ID"),
+					originator: request.headers.get("originator"),
+				});
+				return Response.json({ jsonrpc: "2.0", id, error: { code: -32_601, message: "Unsupported method" } });
+			},
+		});
+		cleanups.push(() => foreign.stop(true));
+		const fake = gateway({ redirectDiscoverTo: new URL("/redirected", foreign.url).toString() });
+		const store = await tempStore();
+		await store.save(credential());
+		const core = coreWithGateway(fake, { store, flow: refreshFlow(() => { throw new Error("no refresh"); }) });
+
+		expect((await core.listTools()).map(tool => tool.name)).toHaveLength(2);
+		expect(forwarded.length).toBeGreaterThan(0);
+		expect(forwarded.every(headers => Object.values(headers).every(value => value === null))).toBe(true);
+	});
+
 	test("a 401 from the gateway refreshes once and retries without interactive sign-in", async () => {
 		const rejected = new Set<string>();
 		const fake = gateway({ rejectedTokens: rejected });
 		const store = await tempStore();
 		await store.save(credential());
 		const flow = refreshFlow(() => ({ access: "access-2", refresh: "refresh-2", expires: Date.now() + HOUR, accountId: "acct-work" }));
-		const core = createSlackCore({ auth: { store, flow }, gateway: { endpoint: fake.endpoint } });
-		cleanups.push(() => core.closeAll());
+		const core = coreWithGateway(fake, { store, flow });
 
 		await core.listTools();
 		rejected.add("access-1");
@@ -109,7 +206,7 @@ describe("Slack over the ChatGPT apps gateway", () => {
 		const store = await tempStore();
 		await store.save(credential({ expires: Date.now() - 1 }));
 		const flow = refreshFlow(() => ({ access: "other", refresh: "other", expires: Date.now() + HOUR, accountId: "acct-personal" }));
-		const core = createSlackCore({ auth: { store, flow }, gateway: { endpoint: fake.endpoint } });
+		const core = coreWithGateway(fake, { store, flow });
 
 		await expect(core.listTools()).rejects.toBeInstanceOf(SlackAuthError);
 		expect((await store.load())?.accountId).toBe("acct-work");
@@ -119,7 +216,12 @@ describe("Slack over the ChatGPT apps gateway", () => {
 	test("without a plugin login, calls ask for /slack login and nothing reaches the gateway", async () => {
 		const fake = gateway();
 		const store = await tempStore();
-		const core = createSlackCore({ auth: { store, flow: refreshFlow(() => { throw new Error("no refresh"); }) }, gateway: { endpoint: fake.endpoint } });
+		const core = coreWithGateway(fake, {
+			store,
+			flow: refreshFlow(() => {
+				throw new Error("no refresh");
+			}),
+		});
 
 		expect(await core.account()).toBeUndefined();
 		const failure = core.listTools();

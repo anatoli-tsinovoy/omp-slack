@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { MCPToolCallResult, MCPToolDefinition } from "@oh-my-pi/pi-coding-agent/mcp";
 import { createSlackReads } from "../src/reads";
+import { renderMcpResult } from "../src/render";
 import { executeSlackOperation, type SlackToolInput } from "../src/tool";
 import type { ChatGPTAccount, SlackCore, SlackWorkspace } from "../src/types";
 
@@ -58,8 +59,8 @@ class FakeSlackCore implements SlackCore {
 	async closeAll(): Promise<void> { }
 }
 
-/** One device's worth of reads: the channel memo persists across calls like it does in a session. */
-function device(core: FakeSlackCore) {
+/** One set of reads: channel memoization persists across tool calls like a session. */
+function runRead(core: FakeSlackCore) {
 	const reads = createSlackReads(core);
 	return async (input: SlackToolInput) =>
 		(await executeSlackOperation(core, input, { reads })).content.map(block => block.text).join("");
@@ -79,11 +80,11 @@ const HISTORY = [
 	"Thanks",
 ].join("\n");
 
-test("channel names resolve via your channel list once, and history links each thread to its op", async () => {
+test("channel names resolve via your channel list once, and history links each thread to its command", async () => {
 	const core = new FakeSlackCore();
 	core.responses.set("slack_list_user_channels", jsonResult({ result: LISTED_GENERAL }));
 	core.responses.set("slack_read_channel", jsonResult({ messages: HISTORY, pagination_info: "End of results" }));
-	const run = device(core);
+	const run = runRead(core);
 	const input: SlackToolInput = { op: "history", workspace: "Acme", channel: "#General", limit: 12, oldest: "1.2", latest: "3.4" };
 
 	const history = await run(input);
@@ -94,7 +95,7 @@ test("channel names resolve via your channel list once, and history links each t
 	// The JSON wrapper is unwrapped into the app's own text.
 	expect(history).toStartWith("Channel: #general (C04MK5YG0)");
 	expect(history).toContain(
-		'Thread: 4 replies (latest: 2026-09-17 00:14:14 IDT) — read: `{"op":"thread","workspace":"T123","channel":"C04MK5YG0","ts":"1789586436.975229"}`',
+		`Thread: 4 replies (latest: 2026-09-17 00:14:14 IDT) — read: \`slack --json '{"op":"thread","workspace":"T123","channel":"C04MK5YG0","ts":"1789586436.975229"}'\``,
 	);
 	expect(history).not.toContain('"ts":"1789485052.065979"');
 	expect(history).toEndWith("Thanks\n\nEnd of results");
@@ -110,7 +111,7 @@ test("a channel you haven't joined resolves through channel search; ambiguous or
 				"# Search Results for: \n\n## Channels (2 results)\n### Result 1 of 2\nName: #launch\nPermalink: [link](https://acme.slack.com/archives/C0LAUNCH1)\n\n---\n\n### Result 2 of 2\nName: #launch-ops\nPermalink: [link](https://acme.slack.com/archives/C0LAUNCH2)\n",
 		}),
 	);
-	const run = device(core);
+	const run = runRead(core);
 	await run({ op: "thread", channel: "launch", ts: "1700.5" });
 	expect(core.calls.at(1)).toEqual({
 		name: "slack_search_channels",
@@ -122,7 +123,7 @@ test("a channel you haven't joined resolves through channel search; ambiguous or
 
 test("profile, canvas, file, and search ops send the connector's argument shapes", async () => {
 	const core = new FakeSlackCore();
-	const run = device(core);
+	const run = runRead(core);
 
 	await run({ op: "profile" });
 	await run({ op: "profile", user: "U999" });
@@ -168,9 +169,9 @@ test("search results with replies link to their thread; results without replies 
 			].join("\n"),
 		}),
 	);
-	const results = await device(core)({ op: "search", query: "released" });
+	const results = await runRead(core)({ op: "search", query: "released" });
 	expect(results).toContain(
-		'Reply count: 7 — read: `{"op":"thread","workspace":"T123","channel":"C030X274BB3","ts":"1793865008.251709"}`',
+		`Reply count: 7 — read: \`slack --json '{"op":"thread","workspace":"T123","channel":"C030X274BB3","ts":"1793865008.251709"}'\``,
 	);
 	expect(results).toEndWith("Reply count: 0");
 });
@@ -178,7 +179,7 @@ test("search results with replies link to their thread; results without replies 
 test("channel listings are scoped to the workspace and accept a name prefix", async () => {
 	const core = new FakeSlackCore();
 	core.responses.set("slack_list_user_channels", jsonResult({ result: LISTED_GENERAL }));
-	const listing = await device(core)({ op: "channels", workspace: "T123", channel: "#Gen" });
+	const listing = await runRead(core)({ op: "channels", workspace: "T123", channel: "#Gen" });
 	expect(core.calls).toEqual([{ name: "slack_list_user_channels", args: { limit: 200, team_id: "T123", name_prefix: "gen" } }]);
 	expect(listing).toBe(LISTED_GENERAL.trim());
 });
@@ -186,14 +187,34 @@ test("channel listings are scoped to the workspace and accept a name prefix", as
 test("a missing connector tool, a Slack error result, and missing fields all surface as errors", async () => {
 	const core = new FakeSlackCore();
 	core.availableTools = [];
-	await expect(device(core)({ op: "channels" })).rejects.toThrow("does not expose `slack_list_user_channels`");
+	await expect(runRead(core)({ op: "channels" })).rejects.toThrow("does not expose `slack_list_user_channels`");
 
 	const failing = new FakeSlackCore();
 	failing.responses.set("slack_read_canvas", { content: [{ type: "text", text: "canvas_not_found" }], isError: true });
-	const run = device(failing);
+	const run = runRead(failing);
 	await expect(run({ op: "canvas", id: "F404" })).rejects.toThrow("canvas_not_found");
 	await expect(run({ op: "thread", channel: "C04MK5YG0" })).rejects.toThrow('"thread" needs `ts`');
 	await expect(run({ op: "search", query: "  " })).rejects.toThrow('"search" needs `query`');
 	await expect(run({ op: "history", workspace: "Elsewhere", channel: "C04MK5YG0" })).rejects.toThrow("Unknown workspace Elsewhere");
 	expect(failing.calls.map(call => call.name)).toEqual(["slack_read_canvas"]);
+});
+
+test("rendered MCP audio and resource links stay readable without exposing audio data", () => {
+	const rendered = renderMcpResult({
+		content: [
+			{
+				type: "resource_link",
+				uri: "slack://Acme/files/F1",
+				name: "Quarterly plan",
+				description: "Read the plan",
+			},
+			{ type: "audio", data: "c2VjcmV0", mimeType: "audio/wav" },
+		],
+	});
+
+	expect(rendered).toContain("Resource link: Quarterly plan");
+	expect(rendered).toContain("slack://Acme/files/F1");
+	expect(rendered).toContain("Read the plan");
+	expect(rendered).toContain("[MCP audio omitted: audio/wav]");
+	expect(rendered).not.toContain("c2VjcmV0");
 });

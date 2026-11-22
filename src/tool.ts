@@ -13,8 +13,8 @@ import {
 } from "./render";
 import type { ChatGPTAccount, SlackCore } from "./types";
 
-const DEVICE_OPS = ["call", "tools", "schema", "workspaces", "login"] as const;
-export type SlackToolOperation = (typeof DEVICE_OPS)[number] | SlackReadOp;
+const SLACK_CONTROL_OPS = ["call", "tools", "schema", "workspaces", "login"] as const;
+export type SlackToolOperation = (typeof SLACK_CONTROL_OPS)[number] | SlackReadOp;
 
 export interface SlackToolInput extends SlackReadInput {
 	op?: SlackToolOperation;
@@ -23,7 +23,7 @@ export interface SlackToolInput extends SlackReadInput {
 }
 
 export interface SlackOperationOptions {
-	/** Curated reads; pass one instance per device so channel-name lookups are remembered across calls. */
+	/** Curated reads; one instance keeps channel-name lookups across tool calls. */
 	reads?: SlackReads;
 	login?: () => Promise<ChatGPTAccount>;
 	signal?: AbortSignal;
@@ -52,7 +52,7 @@ async function requireTool(core: SlackCore, name: string | undefined, operation:
 	return tool;
 }
 
-/** Dispatch one `xd://slack` operation; the gateway is contacted only when an operation needs it. */
+/** Dispatch one `slack` tool operation; contact the gateway only when needed. */
 export async function executeSlackOperation(
 	core: SlackCore,
 	input: SlackToolInput,
@@ -95,7 +95,7 @@ export function slackApproval(args: unknown): "read" | "write" {
 	return op === "call" && typeof tool === "string" && READ_ONLY_SLACK_TOOL.test(tool.trim()) ? "read" : "write";
 }
 
-/** One discoverable `xd://slack` device; no Slack tool schemas enter context until the model asks for them. */
+/** Register one discoverable Slack tool, exposed to Bash as `slack --json`. */
 export function registerSlackTool(pi: ExtensionAPI, core: SlackCore = slackCore): void {
 	const z = pi.zod;
 	const reads = createSlackReads(core);
@@ -107,7 +107,7 @@ export function registerSlackTool(pi: ExtensionAPI, core: SlackCore = slackCore)
 		approval: slackApproval,
 		parameters: z
 			.object({
-				op: z.enum([...DEVICE_OPS, ...SLACK_READ_OPS]).default("call"),
+				op: z.enum([...SLACK_CONTROL_OPS, ...SLACK_READ_OPS]).default("call"),
 				tool: z.string().optional().describe("Slack tool name, e.g. slack_send_message; required for call and schema."),
 				args: z.record(z.string(), z.unknown()).optional().describe("Arguments for the named tool, per its schema."),
 				workspace: z.string().optional().describe("Read ops: team id or name; optional with one workspace."),

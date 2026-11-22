@@ -12,7 +12,7 @@ import { createSlackReads, isChannelId, listedChannels, type SlackChannel, type 
 import type { SlackCore, SlackWorkspace } from "./types";
 
 /**
- * Read-only `slack://` URLs over the curated `xd://slack` reads, as a tree `read`, `glob`, and `grep` walk:
+ * Read-only `slack://` URLs, built on curated Slack reads, for a tree `read`, `glob`, and `grep` walk:
  *
  *   slack://                                    connected workspaces
  *   slack://<workspace>/channels/               channels you're in; each file is its recent history

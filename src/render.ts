@@ -35,9 +35,16 @@ function renderContentBlock(block: MCPToolCallResult["content"][number]): string
 			return block.text;
 		case "image":
 			return `[MCP image omitted: ${block.mimeType}]`;
+		case "audio":
+			return `[MCP audio omitted: ${block.mimeType}]`;
 		case "resource": {
 			const body = block.resource.text ?? `[Binary resource omitted: ${block.resource.mimeType ?? "unknown type"}]`;
 			return `Resource: ${block.resource.uri}\n\n${body}`;
+		}
+		case "resource_link": {
+			const label = block.title ?? block.name ?? block.uri;
+			const description = block.description ? `\n${block.description}` : "";
+			return `Resource link: ${label}\n${block.uri}${description}`;
 		}
 	}
 }
@@ -107,11 +114,16 @@ export function mcpRecords(result: MCPToolCallResult, keys: readonly string[]): 
 	return records?.filter(isJsonRecord);
 }
 
-/** How a reader opens one thread: an `xd://slack` op or a `slack://` URL. */
+/** How a reader opens one thread: a `slack` CLI command or a `slack://` URL. */
 export type SlackThreadLink = (workspace: string, channel: string, ts: string) => string;
 
-/** The `xd://slack` call that reads a thread, as the model writes it. */
-export const xdSlackThreadLink: SlackThreadLink = (workspace, channel, ts) => `\`${JSON.stringify({ op: "thread", workspace, channel, ts })}\``;
+function shellQuote(value: string): string {
+	return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/** The `slack --json` command that reads one thread. */
+export const slackToolThreadCommand: SlackThreadLink = (workspace, channel, ts) =>
+	`\`slack --json ${shellQuote(JSON.stringify({ op: "thread", workspace, channel, ts }))}\``;
 
 /**
  * After each message with replies in the Slack app's channel history (`Thread: N replies`) or search results

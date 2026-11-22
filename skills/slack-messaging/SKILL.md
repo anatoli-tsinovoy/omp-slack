@@ -11,7 +11,7 @@ Use this skill when composing, drafting, scheduling, or improving Slack messages
 
 - Before sending or scheduling a message, adding a reaction, or creating or editing a canvas, show the exact target and proposed content/action and get the user's confirmation, unless they explicitly requested that exact action.
 - A request to draft is not permission to send. Treat saving a draft in Slack as a write: show the draft and destination and get approval before saving it with `slack_send_message_draft`.
-- Every Slack operation is a `write` of JSON to `xd://slack`. Read context with the read ops (`{"op":"history","channel":"#name"}`, `{"op":"thread","channel":"C123","ts":"..."}`, `{"op":"search","query":"..."}`). Perform writes with `{"op":"schema","tool":"slack_send_message"}` to see the arguments, then `{"tool":"slack_send_message","args":{...}}`.
+- Run every Slack operation through the discoverable Bash command `slack --json '<JSON>'`. Use `slack --help` for command options. Read context with `slack --json '{"op":"history","channel":"#name"}'`, `slack --json '{"op":"thread","channel":"C123","ts":"..."}'`, or `slack --json '{"op":"search","query":"..."}'`. Inspect a connector schema with `slack --json '{"op":"schema","tool":"slack_send_message"}'`, then invoke it with `slack --json '{"tool":"slack_send_message","args":{...}}'`.
 - Follow each tool's schema exactly; NEVER guess argument names. When arguments are rejected, report Slack's error text verbatim and correct them using the schema.
 - If several workspaces are connected, pass the intended workspace's `team_id` in `args` where the tool accepts one; do not guess which workspace the user means. If Slack reports that the plugin is not signed in, ask the user to run `/slack login`.
 

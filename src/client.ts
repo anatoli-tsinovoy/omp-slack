@@ -5,13 +5,13 @@ import {
 	listTools as listMCPTools,
 } from "@oh-my-pi/pi-coding-agent/mcp";
 import type {
+	HostedMCPConnection,
+	MCPConnectOptions,
 	MCPHttpServerConfig,
-	MCPServerConnection,
 	MCPToolCallResult,
 	MCPToolDefinition,
 } from "@oh-my-pi/pi-coding-agent/mcp";
 import { MCPTransportError } from "@oh-my-pi/pi-coding-agent/mcp/errors";
-import { HttpTransport } from "@oh-my-pi/pi-coding-agent/mcp/transports/http";
 import type { ChatGPTAuth } from "./credentials";
 import { SlackAuthError } from "./errors";
 import { CHATGPT_APPS_MCP_URL, type ChatGPTCredential, SLACK_CONNECTOR_ID } from "./types";
@@ -19,13 +19,15 @@ import { CHATGPT_APPS_MCP_URL, type ChatGPTCredential, SLACK_CONNECTOR_ID } from
 export interface SlackGatewayOptions {
 	endpoint?: string;
 	connectorId?: string;
+	/** Override the process MCP host, primarily for integration tests. */
+	access?: MCPConnectOptions["access"];
 	/** Called when the gateway announces `notifications/tools/list_changed`. */
 	onToolsChanged?: () => void;
 }
 
 interface GatewayConnection {
-	connection: MCPServerConnection;
-	/** Access token the transport currently sends. */
+	connection: HostedMCPConnection;
+	/** Access token the hosted MCP link currently sends. */
 	access: string;
 	active: number;
 	retired: boolean;
@@ -69,6 +71,7 @@ export class SlackGatewayClient {
 	readonly #auth: ChatGPTAuth;
 	readonly #endpoint: string;
 	readonly #connectorId: string;
+	readonly #access: MCPConnectOptions["access"];
 	readonly #onToolsChanged: (() => void) | undefined;
 	#entry: Promise<GatewayConnection> | undefined;
 	#tools: Promise<MCPToolDefinition[]> | undefined;
@@ -77,6 +80,7 @@ export class SlackGatewayClient {
 		this.#auth = auth;
 		this.#endpoint = options.endpoint ?? CHATGPT_APPS_MCP_URL;
 		this.#connectorId = options.connectorId ?? SLACK_CONNECTOR_ID;
+		this.#access = options.access;
 		this.#onToolsChanged = options.onToolsChanged;
 	}
 
@@ -157,31 +161,27 @@ export class SlackGatewayClient {
 
 	async #open(credential: ChatGPTCredential, signal?: AbortSignal): Promise<GatewayConnection> {
 		let current = credential;
-		let connection: MCPServerConnection;
+		let entry: GatewayConnection | undefined;
+		let connection: HostedMCPConnection;
 		try {
-			connection = await this.#connect(current, signal);
+			connection = await this.#connect(current, signal, async () => {
+				current = await this.#auth.recover(current.access, entry ? undefined : signal);
+				if (entry) entry.access = current.access;
+				return gatewayHeaders(current);
+			});
 		} catch (error) {
-			if (!isHttpAuthFailure(error)) throw error;
-			current = await this.#auth.recover(current.access, signal);
-			try {
-				connection = await this.#connect(current, signal);
-			} catch (retryError) {
-				if (isHttpAuthFailure(retryError)) throw rejectedLogin(retryError);
-				throw retryError;
-			}
+			if (isHttpAuthFailure(error)) throw rejectedLogin(error);
+			throw error;
 		}
-		const entry: GatewayConnection = { connection, access: current.access, active: 0, retired: false };
-		if (connection.transport instanceof HttpTransport) {
-			connection.transport.onAuthError = async () => {
-				const recovered = await this.#auth.recover(entry.access);
-				entry.access = recovered.access;
-				return gatewayHeaders(recovered);
-			};
-		}
+		entry = { connection, access: current.access, active: 0, retired: false };
 		return entry;
 	}
 
-	#connect(credential: ChatGPTCredential, signal?: AbortSignal): Promise<MCPServerConnection> {
+	#connect(
+		credential: ChatGPTCredential,
+		signal: AbortSignal | undefined,
+		onAuthError: NonNullable<MCPConnectOptions["onAuthError"]>,
+	): Promise<HostedMCPConnection> {
 		const config: MCPHttpServerConfig = {
 			type: "http",
 			url: this.#endpoint,
@@ -190,6 +190,9 @@ export class SlackGatewayClient {
 		};
 		return connectToServer("slack", config, {
 			...(signal ? { signal } : {}),
+			access: this.#access,
+			live: true,
+			onAuthError,
 			onNotification: method => {
 				if (method !== "notifications/tools/list_changed") return;
 				this.#tools = undefined;

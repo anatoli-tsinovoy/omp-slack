@@ -1,9 +1,9 @@
 import type { MCPToolCallResult } from "@oh-my-pi/pi-coding-agent/mcp";
 import { findSlackTool } from "./core";
-import { linkSlackThreads, renderMcpResult, type SlackThreadLink, xdSlackThreadLink } from "./render";
+import { linkSlackThreads, renderMcpResult, type SlackThreadLink, slackToolThreadCommand } from "./render";
 import type { SlackCore, SlackWorkspace } from "./types";
 
-/** Curated `xd://slack` reads: workspace and channel names resolve to ids, and history links its threads. */
+/** Curated Slack reads: workspace and channel names resolve to IDs, and history links their threads. */
 export const SLACK_READ_OPS = ["channels", "history", "thread", "profile", "canvas", "file", "search"] as const;
 export type SlackReadOp = (typeof SLACK_READ_OPS)[number];
 
@@ -89,7 +89,7 @@ function searchedChannels(text: string): SlackChannel[] {
 }
 
 /** `threadLink` formats the thread links added to history and search results. */
-export function createSlackReads(core: SlackCore, threadLink: SlackThreadLink = xdSlackThreadLink): SlackReads {
+export function createSlackReads(core: SlackCore, threadLink: SlackThreadLink = slackToolThreadCommand): SlackReads {
 	const channelIds = new Map<string, string>();
 
 	async function call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {

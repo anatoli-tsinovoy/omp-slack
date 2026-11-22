@@ -6,8 +6,8 @@ Given the comma-separated channel names in `$ARGUMENTS`:
 
 1. Split the names, trim whitespace, and remove a leading `#` from each.
 2. Use the requested workspace. If several workspaces are connected and none was named, ask the user to choose. If Slack reports that the plugin is not signed in, ask the user to run `/slack login`.
-3. For each channel, read recent history with `write xd://slack` and `{"op":"history","channel":"<name-or-id>"}`; names resolve automatically. If a name is ambiguous or unknown, list candidates with `{"op":"channels","channel":"<prefix>"}`.
-4. Read relevant active threads with the `thread` op printed next to each message with replies. Summarize notable topics, decisions, questions, and action items.
+3. For each channel, read recent history with `slack --json '{"op":"history","channel":"<name-or-id>"}'`; names resolve automatically. If a name is ambiguous or unknown, use `slack --json '{"op":"channels","channel":"<prefix>"}'` to list candidates.
+4. Read relevant active threads by running the exact `slack --json` command printed beside each message with replies. Summarize notable topics, decisions, questions, and action items.
 5. Present:
 
    ```text
